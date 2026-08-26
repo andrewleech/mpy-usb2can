@@ -1,0 +1,43 @@
+files: ^(src/firmware|.*\.ya?ml)
+
+repos:
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.1.4
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix]
+        additional_dependencies: [git-versioner, types-PyYAML, micropython-stm32-stubs]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.18.2
+    hooks:
+      - id: mypy
+        verbose: true
+        # this entry line means mypy is run, but errors ignored. Remove this once
+        # typing module is updated to allow complete mypy checks.
+        entry: bash -c 'mypy "$@" || true' --
+        exclude: ^src/libs/typing\.py$|\.tmpl$
+        args: [--junit-xml, mypy.xml]
+        additional_dependencies: [git-versioner, types-PyYAML, micropython-stm32-stubs, lxml]
+
+  - repo: https://github.com/adrienverge/yamllint.git
+    rev: v1.33.0
+    hooks:
+      - id: yamllint
+        args: [--format, parsable, -d, "{extends: relaxed, rules: {line-length: {max: 150}, document-start: disable}}"]
+
+  - repo: https://github.com/jumanjihouse/pre-commit-hook-yamlfmt
+    rev: 0.2.3
+    hooks:
+      - id: yamlfmt
+        args: [--mapping, "2", --sequence, "4", --offset, "2", --width, "150", --implicit_start, --preserve-quote]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files

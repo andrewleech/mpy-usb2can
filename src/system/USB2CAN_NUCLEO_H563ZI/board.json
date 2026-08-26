@@ -1,0 +1,14 @@
+{
+    "deploy": [],
+    "docs": "",
+    "features": [
+        "CAN",
+        "USB"
+    ],
+    "images": [],
+    "mcu": "stm32h5",
+    "product": "USB2CAN (NUCLEO-H563ZI)",
+    "thumbnail": "",
+    "url": "https://github.com/andrewleech/mpy-usb2can",
+    "vendor": "alelec"
+}

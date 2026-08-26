@@ -1,0 +1,21 @@
+# Changes here will be overwritten by Copier
+_commit: v1.0-118-g24c92f3
+_src_path: /home/corona/pi-micropython-template
+bootloader_address: '0x08000000'
+config_scheme: structured_config
+gitlab_tag: unused
+include_example_project: false
+mboot_encrypted: false
+project_board_name: USB2CAN_NUCLEO_H563ZI
+project_name: USB2CAN
+project_number: '000'
+project_url: git@github.com:andrewleech/mpy-usb2can.git
+state_machine: None
+target_port: stm32
+template_board: NUCLEO_H563ZI
+usb_pid_developer: '0x1101'
+usb_pid_mboot: '0x1102'
+usb_pid_production: '0x1100'
+usb_vid: '0x30C4'
+use_mboot: true
+version_scheme: git-versioner

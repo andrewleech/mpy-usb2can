@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Toolchain image mpbuild selects for the stm32 port.
+  BUILD_IMAGE: micropython/build-micropython-arm
+
+jobs:
+  checks:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: uvx pre-commit run --all-files --show-diff-on-failure
+
+  test:
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
+    container: micropython/build-micropython-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@v5
+      - name: Fetch submodules
+        run: make submodules
+      - name: Unit tests
+        run: make tests
+      - name: Integration tests
+        run: make integration-tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            results/
+            src/unix/integration-tests/
+
+  build:
+    name: Firmware
+    runs-on: ubuntu-latest
+    container: micropython/build-micropython-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@v5
+      - name: Fetch submodules
+        run: make submodules
+      - name: Build application
+        run: make system
+      - name: Build bootloader
+        run: make mboot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-USB2CAN_NUCLEO_H563ZI
+          path: |
+            src/system/build-USB2CAN_NUCLEO_H563ZI/firmware.*
+            src/system/build-USB2CAN_NUCLEO_H563ZI/bootloader.*
+            src/system/build-USB2CAN_NUCLEO_H563ZI/version.txt
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-USB2CAN_NUCLEO_H563ZI
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true

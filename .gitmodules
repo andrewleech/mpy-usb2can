@@ -1,0 +1,12 @@
+[submodule "src/micropython"]
+	path = src/micropython
+	url = https://github.com/micropython/micropython.git
+[submodule "src/libs/micropython-lib"]
+	path = src/libs/micropython-lib
+	url = https://github.com/micropython/micropython-lib.git
+[submodule "src/libs/micropython_unittest_junit"]
+	path = src/libs/micropython_unittest_junit
+	url = https://gitlab.com/alelec/micropython_unittest_junit.git
+[submodule "src/libs/structured_config"]
+	path = src/libs/structured_config
+	url = https://gitlab.com/alelec/micropython-structured-config.git

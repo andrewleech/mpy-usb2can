@@ -1,0 +1,146 @@
+[project]
+name = "usb2can"
+version = "0.1.0"
+description = "gs_usb-compatible USB-CAN adapter firmware in MicroPython"
+requires-python = ">=3.10"
+
+[dependency-groups]
+# Development dependencies for local testing and integration tests
+dev = [
+    "git-versioner",
+    "robotframework",
+    "robotframework-lint",
+    "micropython-stm32-stubs",
+]
+
+[tool.ruff]
+# Enable pycodestyle (`E`) and Pyflakes (`F`) codes by default.
+select = ["E", "F"]
+ignore = []
+
+# Allow autofix for all enabled rules (when `--fix`) is provided.
+fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+unfixable = []
+
+builtins = ["const", "ptr8"]
+
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "tools/typings",
+]
+
+# Same as our configuration of Black.
+line-length = 99
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Assume Python 3.10 for typing syntax compatibility.
+target-version = "py310"
+
+# Avoid automatically removing unused imports in __init__.py files.
+ignore-init-module-imports = true
+
+typing-modules = ["micropython-stm32-stubs"]
+
+[tool.ruff.mccabe]
+max-complexity = 10
+
+[tool.ruff.per-file-ignores]
+"manifest.py" = ["F821"]  # "Undefined name" for eg. freeze, include, etc.
+
+[tool.ruff.format]
+exclude = [
+    "src/lib",
+    "src/micropython",
+]
+
+[tool.pyright]
+include = ["src"]
+exclude = [".*", "__*", "**/typings"]
+
+stubPath = "tools/typings"
+typeshedPath = "tools/typings"
+
+typeCheckingMode = "basic"
+pythonPlatform = "Linux"
+pythonVersion = "3.10"
+
+reportMissingModuleSource = "none"
+reportUnnecessaryTypeIgnoreComment = "information"
+
+executionEnvironments = [
+  { root = "src", pythonVersion = "3.10", pythonPlatform = "Linux"},
+]
+
+# Should be kept in sync with mypy_path below
+extraPaths = [
+    "tools/typings",
+    "src/firmware/application",
+    "src/firmware/test",
+    "src/micropython/extmod",
+    "src/libs/micropython-lib/micropython/aiorepl",
+    "src/libs/micropython-lib/python-stdlib/logging",
+    "src/libs/micropython-lib/python-stdlib/unittest",
+    "src/libs/structured_config",
+]
+
+[tool.mypy]
+platform = "linux"
+python_version = "3.10"
+
+# Should be kept in sync with pyright extraPaths above
+# When new library / submodules are added to the project, add them here
+mypy_path = [
+    "tools/typings",
+    "src/firmware/application",
+    "src/firmware/test",
+    "src/micropython/extmod",
+    "src/libs/micropython-lib/micropython/aiorepl",
+    "src/libs/micropython-lib/python-stdlib/logging",
+    "src/libs/micropython-lib/python-stdlib/unittest",
+    "src/libs/structured_config",
+]
+
+custom_typeshed_dir = "tools/typings"
+files = "*.py"
+
+# Note: pre-commit sends all changed files explicitly to mypy,
+# bypassing this exclude setting. Ensure pre-commit settings
+# limit checked files appropriately.
+exclude = ['src/micropython/', 'src/libs/', 'tools/typings[\\/].*']
+
+# Stubs are installed into tools/typings by `make typings`.
+# https://micropython-stubs.readthedocs.io/en/main/pyproject.html
+follow_imports = "silent"
+follow_imports_for_stubs = true
+no_site_packages = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Ignore mypy errors in libraries (should be checked & fixed in library itself)
+module = [
+    'manifest',
+    'structured_config',
+]
+ignore_errors = true
