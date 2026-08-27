@@ -118,6 +118,8 @@ eventually outgrow the small-int range too.
 import asyncio
 import logging
 
+import micropython
+
 from gs_usb import protocol, usb_device
 
 log = logging.getLogger("gs_usb.device")
@@ -479,7 +481,15 @@ class GsUsbDataPlane:
         """
         while True:
             await self.run.wait()
-            self._poll()
+            try:
+                micropython.schedule(self._poll, None)
+            except RuntimeError:
+                # Schedule queue full, which means the device is already
+                # saturated with callbacks doing this same work. Skipping
+                # is correct: the next pass retries, and forcing it here
+                # would run _poll unlocked, which is the hazard the
+                # scheduling exists to avoid.
+                pass
             # submit_xfer() can refuse a bulk IN with EBUSY while the
             # endpoint is still settling from the previous transfer. The
             # frame stays queued, but nothing else will retry it: no
@@ -492,9 +502,26 @@ class GsUsbDataPlane:
             else:
                 await asyncio.sleep_ms(_BUSY_POLL_MS)
 
-    def _poll(self):
-        """One pass of task()'s liveness work, separated so it can be
-        driven directly from a test without an event loop."""
+    def _poll(self, _arg=None):
+        """One pass of task()'s liveness work.
+
+        Runs through micropython.schedule rather than directly from the
+        coroutine, so that it executes inside the scheduler's locked drain
+        (`mp_sched_run_pending` holds MP_SCHED_LOCKED for the whole pass).
+        That is the same context the CAN receive callback and the USB
+        transfer callback already run in, which makes all three mutually
+        atomic.
+
+        Called from ordinary coroutine bytecode instead, every `if` here is
+        a preemption point: a CAN callback pending from earlier traffic can
+        land in the middle of _try_submit_pending, submit the echo this
+        pass is still working on, and leave the retry to queue a second one.
+        One accepted transmit, two echoes, and the host's ten-slot
+        accounting leaks with nothing reported anywhere (R12).
+
+        Takes the unused argument micropython.schedule passes, and is
+        callable directly from a test with no event loop.
+        """
         if self._tx_pending:
             self._retry_pending_tx()
         self._arm_out()
@@ -653,15 +680,16 @@ class GsUsbDataPlane:
             mc_flags |= _CAN_MSG_FLAG_RTR
 
         # Under echo-on-write the echo is queued, content and all, before
-        # the frame is handed over. `submit()` reaches machine.CAN, and in
-        # loopback the controller's receive callback runs inside that
-        # call: it queues the received copy and submits it on bulk IN. An
-        # echo prepared after that call would be ordered behind the copy,
-        # so the host would see the receive first and every echo one bulk
-        # transfer late, attributing each echo_id to the wrong frame. It
-        # has to be filled as well as reserved beforehand, because that
-        # same re-entrant callback can submit whatever slot is oldest,
-        # and an empty one would go out as an echo for frame zero.
+        # the frame is handed over, and both steps happen before anything
+        # can preempt them.
+        #
+        # A CAN receive callback pending from earlier traffic runs as soon
+        # as this code reaches a bytecode preemption point, which every
+        # `if` is. It calls _kick_in(), which submits whichever queue entry
+        # is oldest. Reserving a slot and filling it later leaves a window
+        # where that entry is the reservation: an all-zero frame goes out
+        # as an echo for frame zero, and the real echo waits for the next
+        # transfer. Filling before submit() closes the window.
         echo_slot = None
         if self._echo_on_write:
             echo_slot = self._queue.reserve(is_echo=True, exclude=self._in_flight_slot)
@@ -679,8 +707,8 @@ class GsUsbDataPlane:
                     channel,
                     0,
                     self._out_data_views[length],
-                    eff=eff,
-                    rtr=rtr,
+                    eff=bool(eff),
+                    rtr=bool(rtr),
                 )
 
         slot = self._can.submit(channel, ident, self._out_data_views[length], flags=mc_flags)
