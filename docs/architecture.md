@@ -53,44 +53,59 @@ is required. Both CAN pin pairs are AF9.
 The firmware is Python frozen into the MicroPython build, sitting on two
 runtime APIs the port provides in C.
 
+One component owns the CAN controllers, the preallocated frame buffers and the
+frame lifecycle. Transports attach to it as consumers. `gs_usb` is the first
+consumer, not the owner: that factoring is what lets a network transport be
+added later without a second implementation racing for the same controller.
+
 ```mermaid
 flowchart TD
-    subgraph app["Application (frozen Python)"]
-        boot["boot.py<br/>filesystem, USB mode"]
-        main["main.py<br/>entry point"]
-        device["device.py<br/>task setup, event loop"]
-        hardware["hardware.py<br/>hardware objects"]
-        config["device_config.py<br/>runtime config"]
-        repl["repl.py<br/>aiorepl namespace"]
+    subgraph transports["Northbound transports"]
+        gsusb["gs_usb over USB<br/>first consumer"]
+        sockcand["socketcand over TCP<br/>planned"]
+        canopen["CANopen gateway<br/>CiA 309-3, planned"]
     end
 
+    core["CAN core<br/>owns FDCAN1/2, preallocated buffers,<br/>frame lifecycle, echo correlation"]
+
     subgraph port["MicroPython (submodule)"]
-        usbdev["machine.USBDevice<br/>runtime USB device"]
-        can["machine.CAN<br/>FDCAN driver"]
+        usbdev["machine.USBDevice"]
+        net["lwIP / NCM"]
+        can["machine.CAN"]
         tusb["TinyUSB"]
     end
 
     subgraph hw["STM32H563"]
         usbip["USB FS (USB_DRD)"]
+        eth["Ethernet RMII"]
         fdcan["FDCAN1 / FDCAN2"]
     end
 
-    main --> device
-    main --> config
-    device --> hardware
-    device --> repl
-    hardware --> config
-    device -.->|"planned"| usbdev
-    device -.->|"planned"| can
+    gsusb --> core
+    sockcand -.-> core
+    canopen -.-> sockcand
+    core --> can
+    gsusb --> usbdev
+    sockcand -.-> net
     usbdev --> tusb
+    net -.-> tusb
     tusb --> usbip
+    net -.-> eth
     can --> fdcan
 ```
 
-`boot.py` runs before `main.py` and owns filesystem setup only. The dotted
-edges are the gs_usb device itself: **not yet built**. What exists today in
-`device.py` and `hardware.py` is the template's LED demo, which will be
-replaced.
+Dotted edges are unbuilt. The CAN core itself is **not yet built**: today the
+application is the template's LED demo, and the core is the first thing Phase 6
+creates, deliberately before any gs_usb code, because retrofitting it around an
+existing gs_usb data plane costs a rewrite.
+
+Two constraints govern any added transport. It must not alter the gs_usb wire
+contract or its conformance behaviour, and where two transports could drive the
+same channel at once, the arbitration is an explicit decision rather than an
+emergent one. Bandwidth is the practical limit rather than endpoints: a
+composite of gs_usb, the CDC REPL and NCM uses six of eight endpoint numbers
+and fits the 2048-byte packet memory, but NCM shares the Full Speed bus with
+gs_usb, while Ethernet is a separate PHY.
 
 ### Why TinyUSB
 
