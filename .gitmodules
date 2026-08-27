@@ -1,6 +1,7 @@
 [submodule "src/micropython"]
 	path = src/micropython
-	url = https://github.com/micropython/micropython.git
+	url = https://github.com/andrewleech/micropython.git
+	branch = usb2can-integration
 [submodule "src/libs/micropython-lib"]
 	path = src/libs/micropython-lib
 	url = https://github.com/micropython/micropython-lib.git

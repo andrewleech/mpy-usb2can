@@ -3,6 +3,11 @@
 #          or: uv tool install micropython-branch-manager
 # Usage:   mbm --help
 
-submodules = [
-    { path = "src/micropython", integration_branch = "usb2can-integration", branches = [] },
+[[submodules]]
+path = "src/micropython"
+integration_branch = "usb2can-integration"
+branches = [
+    { name = "feature/usbd-runtime-vendor-control" },
+    { name = "feature/stm32-h5-fdcan" },
+    { name = "feature/usbd-bos-descriptor" },
 ]
