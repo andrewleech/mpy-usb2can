@@ -94,10 +94,12 @@ flowchart TD
     can --> fdcan
 ```
 
-Dotted edges are unbuilt. The CAN core itself is **not yet built**: today the
-application is the template's LED demo, and the core is the first thing Phase 6
-creates, deliberately before any gs_usb code, because retrofitting it around an
-existing gs_usb data plane costs a rewrite.
+Dotted edges are unbuilt. The CAN core, the gs_usb protocol codec, control
+plane, data plane and USB device layer all exist and are unit-tested on the
+unix port. **Nothing wires them together yet**: the application still starts
+the template's LED demo and instantiates none of them, so no two of these
+components have run together on hardware. That composition is the next piece of
+work, and it is what turns a library into a device.
 
 Two constraints govern any added transport. It must not alter the gs_usb wire
 contract or its conformance behaviour, and where two transports could drive the
@@ -140,10 +142,12 @@ Both channels are multiplexed over the single bulk endpoint pair and
 distinguished by a channel field in the host frame, so a second channel costs
 no endpoints.
 
-**Not yet built.** The descriptors are unwritten, and two C changes in the
-MicroPython submodule are prerequisites: vendor control transfers must reach
-Python, and a BOS descriptor must be serviceable. Both are on branches tracked
-by `mbm.toml`.
+The descriptors are written and their structure is tested by walking the
+byte stream as a host would. Both prerequisite C changes exist on branches
+tracked by `mbm.toml`: vendor control transfers now reach Python, and a BOS
+descriptor can be served. **Neither has been exercised on the bench**, so the
+claim that a vendor request reaches Python is still a reading of the source
+rather than an observation.
 
 ## Frame paths
 
@@ -193,9 +197,19 @@ preallocated and passed as `memoryview`. And the FDCAN receive FIFOs are three
 elements deep per instance, fixed in hardware, which leaves little slack if the
 Python side is late.
 
-Whether a pure-Python data plane meets the throughput bar is an open question,
-measured before the design is committed. The fallback is a C class driver for
-the data path with the control plane staying in Python.
+The CAN half of that question is measured: pure Python moves 8847 frames/s at
+1 Mbit and 4423 at 500 kbit with zero allocation, both about 98% of what the
+wire itself carries, so the bus is the constraint rather than Python. The USB
+half is not measured and needs a runtime vendor device to measure. The fallback,
+if it is needed, is a C class driver for the data path with the control plane
+staying in Python.
+
+One controller behaviour shapes the transmit path. A frame whose CAN identifier
+is already pending is refused even when the queue has room, because the driver
+preserves transmit order against the controller's identifier arbitration. A
+gs_usb adapter meets this constantly, since a CANopen master transmits
+repeatedly on one identifier. Overriding it buys a few per cent the bus cannot
+use, so the ordering is kept.
 
 ## Repository layout
 
