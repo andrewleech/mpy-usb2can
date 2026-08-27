@@ -87,3 +87,9 @@ JSON file on the device filesystem.
 Generated from a Copier template; `.copier-answers.yml` records the answers. The generated
 tree has since been reworked (GitHub Actions, upstream MicroPython submodules, no
 devcontainer), so `copier update` is not a supported path.
+
+## License
+
+MIT, see [LICENSE](LICENSE). MicroPython and TinyUSB are both MIT; the vendored
+`src/firmware/test/mock_can.py` carries its own upstream MIT attribution in its module
+docstring and composes with the outbound license here.
