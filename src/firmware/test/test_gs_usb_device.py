@@ -460,6 +460,41 @@ class TestReset(unittest.TestCase):
         self.assertTrue(usb_device.EP_BULK_OUT in fake.pending)
 
 
+class TestEchoOrderingUnderReentrantLoopback(unittest.TestCase):
+    def test_echo_is_queued_ahead_of_the_loopback_copy(self):
+        # In hardware loopback the controller's receive callback runs
+        # inside CanCore.submit(), before it returns. An echo slot claimed
+        # after that call is ordered behind the received copy, so the host
+        # sees the receive first and every echo one bulk transfer late,
+        # which is how an echo_id ends up attributed to the wrong frame.
+        core, fake, dev = make()
+        can = bring_up_channel(core)
+        dev.start()
+
+        # Make the mock behave like loopback: deliver the frame back from
+        # inside send(), which is what the real controller does.
+        original_send = can.send
+
+        def looping_send(id, data, flags=0):
+            slot = original_send(id, data, flags)
+            if slot is not None:
+                can.inject(id, bytes(data))
+            return slot
+
+        can.send = looping_send
+
+        fake.feed_out(dev, protocol.pack_classic_frame(4, 0x123, 2, 0, 0, b"\xc1\xc2"))
+
+        # Whatever is on the wire first must be the echo, carrying this
+        # frame's echo_id and payload, not the received copy.
+        first = [p for ep, p in fake.submits if ep == usb_device.EP_BULK_IN][0]
+        echo_id, can_id, dlc, _ch, _fl, data, _ts = protocol.unpack_classic_frame(first, False)
+        self.assertEqual(echo_id, 4)
+        self.assertEqual(can_id, 0x123)
+        self.assertEqual(dlc, 2)
+        self.assertEqual(bytes(data[:2]), b"\xc1\xc2")
+
+
 class TestBackpressureLivenessAcrossStop(unittest.TestCase):
     def test_stopping_a_channel_holding_a_frame_does_not_wedge_bulk_out(self):
         # A frame held under backpressure is normally released by a

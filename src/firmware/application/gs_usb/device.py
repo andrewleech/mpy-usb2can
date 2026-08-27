@@ -147,6 +147,12 @@ _XFER_SUCCESS = 0
 # preallocation one easily-reasoned-about size rather than one that grows
 # with channel count for a bound that this single bulk-IN pipe enforces
 # regardless of how many channels feed it.
+# Periodic-task intervals: the busy one bounds how long a bulk IN refused
+# with EBUSY waits before it is retried; the idle one is a liveness
+# heartbeat with nothing queued.
+_BUSY_POLL_MS = 1
+_IDLE_POLL_MS = 1000
+
 OUT_QUEUE_LEN = 10
 
 # _OutQueue's sequence numbers wrap at 16 bits (F27): see _seq_before.
@@ -474,7 +480,17 @@ class GsUsbDataPlane:
         while True:
             await self.run.wait()
             self._poll()
-            await asyncio.sleep(1)
+            # submit_xfer() can refuse a bulk IN with EBUSY while the
+            # endpoint is still settling from the previous transfer. The
+            # frame stays queued, but nothing else will retry it: no
+            # completion is outstanding to call back. Poll quickly while
+            # anything is queued so that retry costs a millisecond rather
+            # than a second, and fall back to the idle interval once the
+            # queue drains.
+            if self._queue.oldest() is None and not self._tx_pending:
+                await asyncio.sleep_ms(_IDLE_POLL_MS)
+            else:
+                await asyncio.sleep_ms(_BUSY_POLL_MS)
 
     def _poll(self):
         """One pass of task()'s liveness work, separated so it can be
@@ -636,13 +652,47 @@ class GsUsbDataPlane:
         if rtr:
             mc_flags |= _CAN_MSG_FLAG_RTR
 
+        # Under echo-on-write the echo is queued, content and all, before
+        # the frame is handed over. `submit()` reaches machine.CAN, and in
+        # loopback the controller's receive callback runs inside that
+        # call: it queues the received copy and submits it on bulk IN. An
+        # echo prepared after that call would be ordered behind the copy,
+        # so the host would see the receive first and every echo one bulk
+        # transfer late, attributing each echo_id to the wrong frame. It
+        # has to be filled as well as reserved beforehand, because that
+        # same re-entrant callback can submit whatever slot is oldest,
+        # and an empty one would go out as an echo for frame zero.
+        echo_slot = None
+        if self._echo_on_write:
+            echo_slot = self._queue.reserve(is_echo=True, exclude=self._in_flight_slot)
+            if echo_slot is None:
+                log.error("channel %d: echo %d lost, output queue exhausted", channel, echo_id)
+            else:
+                if self._queue.evicted:
+                    self._rx_overflow_pending = True
+                protocol.pack_classic_frame_into(
+                    self._queue.buffer(echo_slot),
+                    0,
+                    echo_id,
+                    ident,
+                    can_dlc,
+                    channel,
+                    0,
+                    self._out_data_views[length],
+                    eff=eff,
+                    rtr=rtr,
+                )
+
         slot = self._can.submit(channel, ident, self._out_data_views[length], flags=mc_flags)
         if slot is None:
+            if echo_slot is not None:
+                # Backpressure, not a rejection: nothing was transmitted,
+                # so nothing can have kicked this slot out onto the wire.
+                # The frame is retried later and claims a slot again then.
+                self._queue.release(echo_slot)
             return False
         if self._echo_on_write:
-            self._send_echo(
-                channel, echo_id, ident, eff, rtr, can_dlc, self._out_data_views[length]
-            )
+            self._kick_in()
             return True
         self._reserve_correlation(channel, slot, echo_id)
         return True
