@@ -218,6 +218,13 @@ class GsUsbControl:
         # no action once the response has been handed over at SETUP.
         self._pending_ack = None
 
+        # Called with a channel index once that channel is stopped. The data
+        # plane holds per-channel state that only that channel's
+        # on_tx_complete would otherwise resolve, and stopping it guarantees
+        # none will fire again, so it has to be told. Set by whoever composes
+        # the two; None leaves behaviour unchanged.
+        self.on_channel_stopped = None
+
     def _valid_channel(self, channel):
         return 0 <= channel < self._num_channels
 
@@ -376,6 +383,8 @@ class GsUsbControl:
     def _stop_channel(self, channel):
         self._can.stop(channel)  # a no-op if the channel was never started
         self._started[channel] = False
+        if self.on_channel_stopped is not None:
+            self.on_channel_stopped(channel)
 
     def reset(self):
         """

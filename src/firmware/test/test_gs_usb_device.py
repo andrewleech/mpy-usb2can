@@ -97,58 +97,6 @@ def decode(buf):
     return echo_id, can_id, can_dlc, channel, flags, data
 
 
-class TestOutQueue(unittest.TestCase):
-    """Unit tests of the shared RX/echo output queue in isolation: the
-    eviction and exhaustion decisions this module makes for the "echo
-    table exhaustion" scenario live here, independent of USB or CAN."""
-
-    def test_rx_reservation_fails_when_full_without_evicting_anything(self):
-        q = device._OutQueue(1, 4)
-        q.reserve(is_echo=False)
-        slot = q.reserve(is_echo=False)
-        self.assertIsNone(slot)
-        self.assertFalse(q.evicted)
-
-    def test_echo_evicts_the_oldest_rx_entry_when_full(self):
-        q = device._OutQueue(2, 4)
-        rx_slot = q.reserve(is_echo=False)
-        q.reserve(is_echo=True)  # fills the second (and last) free slot
-
-        evicting_slot = q.reserve(is_echo=True)
-        self.assertTrue(q.evicted)
-        self.assertEqual(evicting_slot, rx_slot)
-
-    def test_echo_reservation_fails_once_every_slot_already_holds_an_echo(self):
-        q = device._OutQueue(2, 4)
-        q.reserve(is_echo=True)
-        q.reserve(is_echo=True)
-
-        slot = q.reserve(is_echo=True)
-        self.assertIsNone(slot)
-        self.assertFalse(q.evicted)
-
-    def test_oldest_serves_in_reservation_order(self):
-        q = device._OutQueue(3, 4)
-        first = q.reserve(is_echo=False)
-        q.reserve(is_echo=False)
-        self.assertEqual(q.oldest(), first)
-        q.release(first)
-        second_oldest = q.oldest()
-        self.assertNotEqual(second_oldest, first)
-
-    def test_reserve_never_evicts_the_excluded_slot(self):
-        # F9: the slot currently in flight on bulk IN must survive an
-        # eviction even when it is the oldest queued entry and the queue
-        # has nothing else free.
-        q = device._OutQueue(2, 4)
-        oldest = q.reserve(is_echo=False)
-        q.reserve(is_echo=False)  # fills the last free slot
-
-        evicting_slot = q.reserve(is_echo=True, exclude=oldest)
-        self.assertTrue(q.evicted)
-        self.assertNotEqual(evicting_slot, oldest)
-
-
 class TestReceivePath(unittest.TestCase):
     def test_single_receive_becomes_one_bulk_in_with_correct_bytes(self):
         core, fake, dev = make()
@@ -296,78 +244,81 @@ class TestTransmitPath(unittest.TestCase):
         self.assertTrue(usb_device.EP_BULK_OUT in fake.pending)
 
 
-class TestEchoEvictionProtectsInFlightSlot(unittest.TestCase):
-    def test_eviction_never_touches_the_slot_in_flight_on_bulk_in(self):
-        # F9: an echo reservation must never evict the entry currently
-        # armed on bulk IN, even when it is the oldest queued one and the
-        # queue is otherwise full.
+class TestFrameRing(unittest.TestCase):
+    """The ring is all-or-nothing: RingIO itself truncates a write to whatever
+    space is left and reports the short count, which for a framed protocol is
+    permanent desync rather than one lost frame."""
+
+    def make(self, frames=2):
+        return device._FrameRing(frames, protocol.FRAME_SIZE_CLASSIC)
+
+    def test_a_frame_that_does_not_fit_is_refused_whole(self):
+        ring = self.make(frames=1)
+        a = protocol.pack_classic_frame(1, 0x100, 1, 0, 0, b"\xaa")
+        b = protocol.pack_classic_frame(2, 0x200, 1, 0, 0, b"\xbb")
+        self.assertTrue(ring.write(a))
+        self.assertFalse(ring.write(b))
+        # The refusal left nothing behind: the next read is still frame a,
+        # correctly aligned.
+        buf = bytearray(protocol.FRAME_SIZE_CLASSIC)
+        self.assertTrue(ring.readinto(buf))
+        self.assertEqual(protocol.unpack_classic_frame(bytes(buf), False)[0], 1)
+        self.assertFalse(ring.readinto(buf))
+
+    def test_frames_leave_in_arrival_order(self):
+        ring = self.make(frames=4)
+        for i in range(4):
+            self.assertTrue(ring.write(protocol.pack_classic_frame(i, 0x100 + i, 0, 0, 0, b"")))
+        buf = bytearray(protocol.FRAME_SIZE_CLASSIC)
+        for i in range(4):
+            self.assertTrue(ring.readinto(buf))
+            self.assertEqual(protocol.unpack_classic_frame(bytes(buf), False)[0], i)
+
+    def test_pending_counts_whole_frames(self):
+        ring = self.make(frames=3)
+        self.assertEqual(ring.pending(), 0)
+        ring.write(protocol.pack_classic_frame(0, 0x100, 0, 0, 0, b""))
+        self.assertEqual(ring.pending(), 1)
+
+    def test_reset_discards_everything(self):
+        ring = self.make(frames=3)
+        ring.write(protocol.pack_classic_frame(0, 0x100, 0, 0, 0, b""))
+        ring.reset()
+        self.assertEqual(ring.pending(), 0)
+        self.assertFalse(ring.readinto(bytearray(protocol.FRAME_SIZE_CLASSIC)))
+
+
+class TestEchoCapacityIsGuaranteed(unittest.TestCase):
+    def test_every_echo_the_host_can_be_owed_fits(self):
+        # The host holds ten transmits outstanding per channel, and the echo
+        # ring is sized to exactly that, so an echo can never fail to find
+        # room. This is what makes R12 an arithmetic argument rather than a
+        # hope, and it is why there is no eviction policy any more.
         core, fake, dev = make()
         can = bring_up_channel(core)
         dev.start()
+        for i in range(device.ECHO_FRAMES_PER_CHANNEL):
+            fake.feed_out(dev, protocol.pack_classic_frame(i, 0x100 + i, 0, 0, 0, b""))
+            # Free the 3-deep hardware TX queue; the echo ring's capacity is
+            # what is under test, not CanCore's.
+            can.complete_tx()
+        self.assertEqual(dev.counters()["echo_lost"], 0)
+        # One is in flight on bulk IN, the rest are queued rather than lost.
+        self.assertEqual(dev._echo_ring.pending(), device.ECHO_FRAMES_PER_CHANNEL - 1)
 
-        can.inject(0x100, b"\x01")  # becomes the in-flight bulk-IN transfer
-        self.assertEqual(decode(fake.pending[usb_device.EP_BULK_IN])[1], 0x100)
-
-        for i in range(device.OUT_QUEUE_LEN - 1):  # fill every remaining slot
-            can.inject(0x200 + i, b"\x02")
-
-        # The queue is now full; an echo must evict something, but not the
-        # slot bulk IN is already reading from.
-        frame = protocol.pack_classic_frame(0, 0x321, 1, 0, 0, b"\xaa")
-        fake.feed_out(dev, frame)
-
-        self.assertEqual(decode(fake.pending[usb_device.EP_BULK_IN])[1], 0x100)
-
-
-class TestOutstandingEchoCapacity(unittest.TestCase):
-    """The ten-slot wedge: this module's own output queue, not the
-    hardware TX queue, is what GS_MAX_TX_URBS bounds it against."""
-
-    def _submit(self, dev, fake, can, echo_id, can_id=None):
-        if can_id is None:
-            can_id = 0x100 + echo_id  # distinct ids: a repeated pending id is refused
-        frame = protocol.pack_classic_frame(echo_id, can_id, 1, 0, 0, bytes([echo_id & 0xFF]))
-        fake.feed_out(dev, frame)
-        # Frees the 3-deep hardware TX queue immediately: it is the
-        # software output queue's 10-deep capacity under test here, not
-        # CanCore's, so nothing must be left resting on the latter.
+    def test_receives_cannot_crowd_echoes_out(self):
+        # Receives have their own ring, so a receive burst cannot consume the
+        # capacity an echo needs. Under the old shared queue this was what
+        # eviction existed to prevent.
+        core, fake, dev = make()
+        can = bring_up_channel(core)
+        dev.start()
+        for i in range(device.RX_RING_FRAMES * 2):
+            can.inject(0x300 + i, b"\x01")
+        fake.feed_out(dev, protocol.pack_classic_frame(7, 0x123, 0, 0, 0, b""))
         can.complete_tx()
-
-    def test_ten_outstanding_echoes_all_survive_without_draining(self):
-        core, fake, dev = make()
-        can = bring_up_channel(core)
-        dev.start()
-
-        for echo_id in range(device.OUT_QUEUE_LEN):
-            self._submit(dev, fake, can, echo_id)
-
-        # bulk-IN carries one transfer at a time; the other nine echoes
-        # are queued, not lost.
-        self.assertEqual(len(in_submits(fake)), 1)
-
-        delivered = []
-        for _ in range(device.OUT_QUEUE_LEN):
-            delivered.append(in_submits(fake)[-1])
-            fake.complete_in(dev)
-
-        self.assertEqual([decode(buf)[0] for buf in delivered], list(range(device.OUT_QUEUE_LEN)))
-
-    def test_eleventh_transmit_is_the_only_casualty(self):
-        core, fake, dev = make()
-        can = bring_up_channel(core)
-        dev.start()
-
-        for echo_id in range(device.OUT_QUEUE_LEN):
-            self._submit(dev, fake, can, echo_id)
-        self._submit(dev, fake, can, 10, can_id=0x200)  # the queue is already full of echoes
-
-        delivered = []
-        for _ in range(device.OUT_QUEUE_LEN):
-            delivered.append(in_submits(fake)[-1])
-            fake.complete_in(dev)
-
-        # the ten queued before the overflow are untouched and intact.
-        self.assertEqual([decode(buf)[0] for buf in delivered], list(range(device.OUT_QUEUE_LEN)))
+        self.assertEqual(dev.counters()["echo_lost"], 0)
+        self.assertTrue(dev.counters()["rx_dropped"] > 0)
 
 
 class TestEchoOnCompletionPolicy(unittest.TestCase):
@@ -443,16 +394,16 @@ class TestReset(unittest.TestCase):
         can.inject(0x400, b"\x02")  # queued behind it, no free slot yet
 
         self.assertTrue(dev._in_flight)
-        self.assertIsNotNone(dev._in_flight_slot)
-        self.assertIsNotNone(dev._queue.oldest())
+        self.assertTrue(dev._rx_ring.pending() or dev._echo_ring.pending())
 
         dev.reset()
 
         self.assertFalse(dev._in_flight)
-        self.assertIsNone(dev._in_flight_slot)
+        self.assertFalse(dev._in_staged)
         self.assertFalse(dev._out_armed)
         self.assertFalse(dev._tx_pending)
-        self.assertIsNone(dev._queue.oldest())
+        self.assertEqual(dev._echo_ring.pending(), 0)
+        self.assertEqual(dev._rx_ring.pending(), 0)
 
         # Re-arming after the reset works from a clean slate, matching
         # what open_itf_cb does once re-enumeration completes.
@@ -460,13 +411,13 @@ class TestReset(unittest.TestCase):
         self.assertTrue(usb_device.EP_BULK_OUT in fake.pending)
 
 
-class TestEchoOrderingUnderReentrantLoopback(unittest.TestCase):
-    def test_echo_is_queued_ahead_of_the_loopback_copy(self):
-        # In hardware loopback the controller's receive callback runs
-        # inside CanCore.submit(), before it returns. An echo slot claimed
-        # after that call is ordered behind the received copy, so the host
-        # sees the receive first and every echo one bulk transfer late,
-        # which is how an echo_id ends up attributed to the wrong frame.
+class TestEchoSurvivesReentrantLoopback(unittest.TestCase):
+    def test_echo_carries_its_own_frame_when_a_receive_races_it(self):
+        # A received copy can be queued and submitted while this frame's echo
+        # is still being assembled: on hardware by a callback pending from
+        # earlier traffic, and in this mock by delivering it from inside
+        # send(). Either way the echo must still go out carrying its own
+        # frame's echo_id and payload.
         core, fake, dev = make()
         can = bring_up_channel(core)
         dev.start()
@@ -484,11 +435,30 @@ class TestEchoOrderingUnderReentrantLoopback(unittest.TestCase):
         can.send = looping_send
 
         fake.feed_out(dev, protocol.pack_classic_frame(4, 0x123, 2, 0, 0, b"\xc1\xc2"))
+        # Drain bulk IN until nothing more is queued: only one transfer is
+        # outstanding at a time, so the echo cannot appear until whatever went
+        # first has completed.
+        for _ in range(4):
+            if usb_device.EP_BULK_IN in fake.pending:
+                fake.complete_in(dev)
 
-        # Whatever is on the wire first must be the echo, carrying this
-        # frame's echo_id and payload, not the received copy.
-        first = [p for ep, p in fake.submits if ep == usb_device.EP_BULK_IN][0]
-        echo_id, can_id, dlc, _ch, _fl, data, _ts = protocol.unpack_classic_frame(first, False)
+        # The echo must carry this frame's echo_id and payload. Under the old
+        # reserve-then-fill queue an empty slot could be sent as an echo for
+        # frame zero while the real echo waited a transfer; a ring cannot
+        # express that, since an entry exists complete or not at all.
+        #
+        # Order on the wire is not asserted: the host reads echo_id out of each
+        # frame and does not care which arrives first. _kick_in prefers echoes
+        # when both are waiting, but here the mock delivers the received copy
+        # from inside send(), before the echo exists to be preferred.
+        sent = [p for ep, p in fake.submits if ep == usb_device.EP_BULK_IN]
+        echoes = [
+            protocol.unpack_classic_frame(p, False)
+            for p in sent
+            if protocol.unpack_classic_frame(p, False)[0] != protocol.ECHO_ID_RX
+        ]
+        self.assertEqual(len(echoes), 1)
+        echo_id, can_id, dlc, _ch, _fl, data, _ts = echoes[0]
         self.assertEqual(echo_id, 4)
         self.assertEqual(can_id, 0x123)
         self.assertEqual(dlc, 2)
@@ -538,10 +508,10 @@ class TestBackpressureLivenessAcrossStop(unittest.TestCase):
 
 
 class TestSpuriousInCompletion(unittest.TestCase):
-    def test_in_done_with_no_in_flight_slot_does_not_raise(self):
-        # F7: xfer_cb(EP_BULK_IN, ...) firing with no slot recorded as
-        # in-flight (e.g. a stale completion racing a reset) must be
-        # logged and ignored, not raise out of the USB callback trampoline.
+    def test_in_done_with_nothing_in_flight_does_not_raise(self):
+        # xfer_cb(EP_BULK_IN, ...) firing with nothing recorded in flight (a
+        # stale completion racing a reset, say) must be ignored rather than
+        # raise back into the USB callback trampoline.
         core, fake, dev = make()
         bring_up_channel(core)
         dev.start()
@@ -577,7 +547,10 @@ class TestSubmitXferOSError(unittest.TestCase):
         fake.submit_xfer = _raise
         can.inject(0x100, b"\x01")  # does not raise, despite _kick_in() failing
         self.assertFalse(dev._in_flight)
-        self.assertIsNone(dev._in_flight_slot)
+        # The frame was read out of the ring before submit_xfer refused it, so
+        # it is held staged rather than lost, and a later kick retries it.
+        self.assertTrue(dev._in_staged)
+        self.assertEqual(dev.counters()["in_submit_failed"], 1)
 
 
 class TestOutTransferExceptionBoundary(unittest.TestCase):

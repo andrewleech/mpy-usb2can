@@ -155,149 +155,58 @@ _XFER_SUCCESS = 0
 _BUSY_POLL_MS = 1
 _IDLE_POLL_MS = 1000
 
-OUT_QUEUE_LEN = 10
+# Outbound capacity is partitioned rather than shared, so that an echo can
+# never fail to find room and R12 reduces to arithmetic. The host holds ten
+# transmits outstanding per channel (GS_MAX_TX_URBS), so that many echo frames
+# is the most it can ever be owed at once.
+ECHO_FRAMES_PER_CHANNEL = 10
 
-# _OutQueue's sequence numbers wrap at 16 bits (F27): see _seq_before.
-_SEQ_MASK = 0xFFFF
-_SEQ_HALF = 0x8000
+# Receives get their own ring. The controller's own RX FIFO is three elements
+# deep, so depth much beyond that buys nothing: a burst that outruns this ring
+# has already outrun the hardware.
+RX_RING_FRAMES = 16
 
 
-def _seq_before(a, b):
+class _FrameRing:
     """
-    True if sequence number `a` was assigned strictly before `b`, given
-    16-bit wraparound sequence numbers.
+    Fixed-size frames over `micropython.RingIO`, all or nothing.
 
-    A plain, ever-incrementing counter would eventually need more than a
-    small int can hold on a 32-bit target (R10); wrapping it at 16 bits
-    avoids that, but a direct `a < b` comparison breaks the instant `a`
-    wraps back to 0 while `b` is still near the top of the range. Signed
-    subtraction modulo the wrap width recovers the right answer: the
-    difference is negative (equivalently, its low 16 bits are at or past
-    the halfway point) exactly when `a` is the older of the two, for any
-    pair whose true separation is less than half the wrap width, which
-    holds here since the queue's capacity is far smaller than 0x10000.
-    """
-    return ((a - b) & _SEQ_MASK) >= _SEQ_HALF
+    `RingIO` is a byte ring and its write truncates to whatever space is
+    available, returning the short count rather than refusing
+    (`py/objringio.c`). For a framed protocol a partial write is not a dropped
+    frame, it is permanent desync: every subsequent read is misaligned. So the
+    capacity is owned here (RingIO exposes none) and a frame is admitted only
+    when a whole one fits.
 
-
-class _OutQueue:
-    """
-    Fixed-capacity queue of pending outbound gs_host_frames, shared by
-    the RX and echo paths since both leave over the same bulk-IN
-    endpoint. Backed by `capacity` preallocated frame-sized buffers,
-    reused by index; nothing here is appended, popped or resized after
-    construction (R10).
-
-    Entries are served oldest first, a monotonic (wrapping) sequence
-    number breaking ties without needing an actual ring of positions. An
-    echo that finds every slot occupied evicts the oldest RX-sourced
-    entry rather than failing: a dropped RX frame has a recovery path
-    (CAN_FLAG_OVERFLOW on the next one delivered); a dropped echo does
-    not (R12), and is the outcome this queue exists to prevent. Only when
-    every occupied slot already holds an echo, an echo backlog beyond
-    what the capacity reserves for it, is a new echo actually lost; that
-    last-resort case means an invariant elsewhere in this module has
-    already been violated (see GsUsbDataPlane._send_echo), not that this
-    branch is a supported outcome.
+    Frames leave in the order they arrived, and a reader gets a copy, so a
+    frame handed to the USB controller cannot be overwritten by a later one.
     """
 
-    def __init__(self, capacity, frame_size):
-        self._capacity = capacity
-        self._bufs = [bytearray(frame_size) for _ in range(capacity)]
-        self._occupied = [False] * capacity
-        self._is_echo = [False] * capacity
-        self._seq = [0] * capacity
-        self._next_seq = 0
-        # Set by reserve(); see its docstring for why a plain attribute,
-        # not a second return value, is the zero-allocation way to
-        # surface this.
-        self.evicted = False
+    def __init__(self, frames, frame_size):
+        self._frame_size = frame_size
+        self._capacity = frames * frame_size
+        self._ring = micropython.RingIO(self._capacity)
 
-    def _free_slot(self):
-        for i in range(self._capacity):
-            if not self._occupied[i]:
-                return i
-        return None
+    def write(self, frame):
+        """Append one whole frame, or nothing. True when it was taken."""
+        if self._capacity - self._ring.any() < self._frame_size:
+            return False
+        self._ring.write(frame)
+        return True
 
-    def _oldest_rx_slot(self, exclude):
-        best = None
-        for i in range(self._capacity):
-            if i == exclude:
-                continue
-            if self._occupied[i] and not self._is_echo[i]:
-                if best is None or _seq_before(self._seq[i], self._seq[best]):
-                    best = i
-        return best
+    def readinto(self, buf):
+        """Fill buf with the oldest frame, or leave it alone. True when read."""
+        if self._ring.any() < self._frame_size:
+            return False
+        self._ring.readinto(buf)
+        return True
 
-    def _occupy(self, slot, is_echo):
-        self._occupied[slot] = True
-        self._is_echo[slot] = is_echo
-        self._seq[slot] = self._next_seq
-        self._next_seq = (self._next_seq + 1) & _SEQ_MASK
-
-    def reserve(self, is_echo, exclude=None):
-        """
-        Reserve a slot for a new outbound frame. Returns the slot index,
-        or None when the queue has no room for it (a plain RX
-        reservation drops the frame there; an echo reservation only
-        fails that way in the last-resort case described in the class
-        docstring).
-
-        Whether satisfying an echo reservation required evicting the
-        oldest queued RX frame is left in `self.evicted` rather than a
-        second return value: returning a tuple would allocate one on
-        every single call, on a path this module promises never
-        allocates (R10). This queue is only ever driven synchronously,
-        from within one CAN or USB callback at a time, never re-entered,
-        so `self.evicted` cannot go stale before the caller that just
-        set it reads it back.
-
-        `exclude`, when given, names a slot eviction must never choose:
-        the one currently in flight on bulk IN, whose buffer a USB
-        controller may already be reading from. Evicting it here would
-        overwrite those bytes out from under that transfer instead of
-        just discarding a queued frame (F9).
-        """
-        self.evicted = False
-        slot = self._free_slot()
-        if slot is not None:
-            self._occupy(slot, is_echo)
-            return slot
-        if not is_echo:
-            return None
-        slot = self._oldest_rx_slot(exclude)
-        if slot is None:
-            return None
-        self._occupy(slot, is_echo)
-        self.evicted = True
-        return slot
-
-    def buffer(self, slot):
-        return self._bufs[slot]
-
-    def oldest(self):
-        """Slot index of the oldest occupied entry, or None. Use
-        buffer(slot) to read its contents."""
-        best = None
-        for i in range(self._capacity):
-            if self._occupied[i] and (best is None or _seq_before(self._seq[i], self._seq[best])):
-                best = i
-        return best
-
-    def release(self, slot):
-        self._occupied[slot] = False
+    def pending(self):
+        return self._ring.any() // self._frame_size
 
     def reset(self):
-        """Clear every slot's occupancy, discarding whatever was queued
-        (F1, F13): a USB bus reset means the host is restarting its own
-        state from scratch and is not waiting for completion of anything
-        queued for the connection that just ended. The sequence counter
-        is left running; nothing about a reset requires resetting it
-        too, and doing so would risk a stale duplicate against whatever
-        it was last compared against."""
-        for i in range(self._capacity):
-            self._occupied[i] = False
-            self._is_echo[i] = False
+        while self._ring.any():
+            self._ring.read(self._ring.any())
 
 
 class GsUsbDataPlane:
@@ -330,7 +239,6 @@ class GsUsbDataPlane:
         usb,
         num_channels=None,
         tx_queue_len=3,
-        out_queue_len=OUT_QUEUE_LEN,
         echo_on_write=True,
     ):
         self._can = can
@@ -344,11 +252,37 @@ class GsUsbDataPlane:
         self._num_channels = num_channels
         self._echo_on_write = echo_on_write
 
-        self._queue = _OutQueue(out_queue_len, protocol.FRAME_SIZE_CLASSIC)
+        # Echo capacity is per channel because the host's outstanding-transmit
+        # window is per channel; receives share one ring across channels.
+        self._echo_ring = _FrameRing(
+            num_channels * ECHO_FRAMES_PER_CHANNEL, protocol.FRAME_SIZE_CLASSIC
+        )
+        self._rx_ring = _FrameRing(RX_RING_FRAMES, protocol.FRAME_SIZE_CLASSIC)
+        self._echo_scratch = bytearray(protocol.FRAME_SIZE_CLASSIC)
+        self._rx_scratch = bytearray(protocol.FRAME_SIZE_CLASSIC)
         self._rx_overflow_pending = False
 
+        # The one buffer bulk IN transfers are submitted from. Held across a
+        # transfer, so `_in_flight` is what keeps a second frame from being
+        # read over the top of one the controller is still sending; that is
+        # only sound because every entry point into this class runs inside the
+        # scheduler's locked drain.
+        self._in_buf = bytearray(protocol.FRAME_SIZE_CLASSIC)
         self._in_flight = False
-        self._in_flight_slot = None
+        self._in_staged = False
+
+        # Counted rather than logged: these fire exactly when the device is
+        # already behind, and a log line is milliseconds of blocking UART plus
+        # an allocation, on the path R10 governs. `counters()` reports them.
+        self._n_echo_lost = 0
+        self._n_rx_dropped = 0
+        self._n_in_submit_failed = 0
+        self._n_in_xfer_failed = 0
+        self._n_out_xfer_bad = 0
+        self._n_out_arm_failed = 0
+        self._n_out_processing_failed = 0
+        self._n_tx_bad_channel = 0
+        self._n_tx_not_started = 0
         self._out_armed = False
 
         # True while self._out_fields holds a well-formed frame that
@@ -441,10 +375,11 @@ class GsUsbDataPlane:
         normally, so the correlation table is left alone here.
         """
         self._in_flight = False
-        self._in_flight_slot = None
+        self._in_staged = False
         self._out_armed = False
         self._tx_pending = False
-        self._queue.reset()
+        self._echo_ring.reset()
+        self._rx_ring.reset()
         self._rx_overflow_pending = False
 
     def open_itf_cb(self, itf_desc=None):
@@ -497,7 +432,7 @@ class GsUsbDataPlane:
             # anything is queued so that retry costs a millisecond rather
             # than a second, and fall back to the idle interval once the
             # queue drains.
-            if self._queue.oldest() is None and not self._tx_pending:
+            if not (self._echo_ring.pending() or self._rx_ring.pending() or self._tx_pending):
                 await asyncio.sleep_ms(_IDLE_POLL_MS)
             else:
                 await asyncio.sleep_ms(_BUSY_POLL_MS)
@@ -546,57 +481,63 @@ class GsUsbDataPlane:
             return
         try:
             armed = self._usb.submit_xfer(usb_device.EP_BULK_OUT, self._out_buf)
-        except OSError as exc:
+        except OSError:
             # F19: submit_xfer() can raise rather than return False when
             # the endpoint cannot accept a transfer right now (host not
             # yet configured, most likely at boot, or mid-reset). The
             # next call to _arm_out(), from whichever event fires next
             # (open_itf_cb, or task()'s own retry), tries again; there is
             # no separate retry timer beyond that.
-            log.warning("bulk OUT arm failed: %r", exc)
+            self._n_out_arm_failed += 1
             return
         if armed:
             self._out_armed = True
 
     def _kick_in(self):
+        """Send the next outbound frame, echoes ahead of receives.
+
+        A dropped receive is reportable to the host through the overflow flag
+        on the next one; a dropped echo cannot be signalled at all, so echoes
+        go first whenever both are waiting.
+
+        A frame read out of a ring but not accepted by submit_xfer() stays in
+        `_in_buf` with `_in_staged` set rather than being lost, since it is no
+        longer in the ring to be found again.
+        """
         if self._in_flight:
             return
-        slot = self._queue.oldest()
-        if slot is None:
-            return
-        buf = self._queue.buffer(slot)
+        if not self._in_staged:
+            if not self._echo_ring.readinto(self._in_buf):
+                if not self._rx_ring.readinto(self._in_buf):
+                    return
+            self._in_staged = True
         try:
-            armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, buf)
-        except OSError as exc:  # F19; see _arm_out's matching comment
-            log.warning("bulk IN submit failed: %r", exc)
+            armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, self._in_buf)
+        except OSError:  # F19; see _arm_out's matching comment
+            self._n_in_submit_failed += 1
             return
         if armed:
             self._in_flight = True
-            self._in_flight_slot = slot
+            self._in_staged = False
 
     def _handle_in_done(self, result):
         if result != _XFER_SUCCESS:
-            log.warning("bulk IN transfer failed (result=%d)", result)
-        if self._in_flight_slot is not None:
-            self._queue.release(self._in_flight_slot)
-        else:
-            log.warning("bulk IN completion with no in-flight slot recorded")
+            self._n_in_xfer_failed += 1
         self._in_flight = False
-        self._in_flight_slot = None
         self._kick_in()
 
     def _handle_out_done(self, result, xferred_bytes):
         self._out_armed = False
         try:
             resolved = self._process_out_transfer(result, xferred_bytes)
-        except Exception as exc:  # noqa: BLE001 - last-resort boundary, see below
+        except Exception:  # noqa: BLE001 - last-resort boundary, see below
             # A USB xfer_cb exception must never reach back into the C
             # callback trampoline (matching gs_usb.control's own
             # exception-boundary contract). Treated as resolved: holding
             # a frame this class does not understand well enough to
             # retry would wedge bulk OUT forever instead of just
             # dropping this one frame without an echo.
-            log.error("bulk OUT processing failed: %r", exc)
+            self._n_out_processing_failed += 1
             resolved = True
         self._tx_pending = not resolved
         if resolved:
@@ -616,7 +557,7 @@ class GsUsbDataPlane:
         succeeds.
         """
         if result != _XFER_SUCCESS or xferred_bytes != protocol.FRAME_SIZE_CLASSIC:
-            log.warning("malformed bulk OUT transfer (result=%d, %d bytes)", result, xferred_bytes)
+            self._n_out_xfer_bad += 1
             return True
 
         protocol.unpack_classic_frame_into(
@@ -656,7 +597,7 @@ class GsUsbDataPlane:
             # rather than the channel the host asked for: the host is
             # still owed exactly one echo per frame it handed over,
             # invalid channel or not (R12).
-            log.warning("TX frame for out-of-range channel %d dropped", channel)
+            self._n_tx_bad_channel += 1
             self._send_echo(0, echo_id)
             return True
 
@@ -665,7 +606,7 @@ class GsUsbDataPlane:
             # RESET stopped this channel: CanCore.submit() would raise
             # against a torn-down controller rather than return None, so
             # this is checked before ever calling it.
-            log.warning("TX frame for channel %d dropped: channel not started", channel)
+            self._n_tx_not_started += 1
             length = protocol.dlc_to_len(can_dlc)
             self._send_echo(
                 channel, echo_id, ident, eff, rtr, can_dlc, self._out_data_views[length]
@@ -679,48 +620,15 @@ class GsUsbDataPlane:
         if rtr:
             mc_flags |= _CAN_MSG_FLAG_RTR
 
-        # Under echo-on-write the echo is queued, content and all, before
-        # the frame is handed over, and both steps happen before anything
-        # can preempt them.
-        #
-        # A CAN receive callback pending from earlier traffic runs as soon
-        # as this code reaches a bytecode preemption point, which every
-        # `if` is. It calls _kick_in(), which submits whichever queue entry
-        # is oldest. Reserving a slot and filling it later leaves a window
-        # where that entry is the reservation: an all-zero frame goes out
-        # as an echo for frame zero, and the real echo waits for the next
-        # transfer. Filling before submit() closes the window.
-        echo_slot = None
-        if self._echo_on_write:
-            echo_slot = self._queue.reserve(is_echo=True, exclude=self._in_flight_slot)
-            if echo_slot is None:
-                log.error("channel %d: echo %d lost, output queue exhausted", channel, echo_id)
-            else:
-                if self._queue.evicted:
-                    self._rx_overflow_pending = True
-                protocol.pack_classic_frame_into(
-                    self._queue.buffer(echo_slot),
-                    0,
-                    echo_id,
-                    ident,
-                    can_dlc,
-                    channel,
-                    0,
-                    self._out_data_views[length],
-                    eff=bool(eff),
-                    rtr=bool(rtr),
-                )
-
         slot = self._can.submit(channel, ident, self._out_data_views[length], flags=mc_flags)
         if slot is None:
-            if echo_slot is not None:
-                # Backpressure, not a rejection: nothing was transmitted,
-                # so nothing can have kicked this slot out onto the wire.
-                # The frame is retried later and claims a slot again then.
-                self._queue.release(echo_slot)
+            # Backpressure, not a rejection: nothing has been written anywhere,
+            # so there is nothing to unwind. The frame is retried later.
             return False
         if self._echo_on_write:
-            self._kick_in()
+            self._send_echo(
+                channel, echo_id, ident, eff, rtr, can_dlc, self._out_data_views[length]
+            )
             return True
         self._reserve_correlation(channel, slot, echo_id)
         return True
@@ -781,43 +689,31 @@ class GsUsbDataPlane:
         """
         if data is None:
             data = self._out_data_views[0]
-        slot = self._queue.reserve(is_echo=True, exclude=self._in_flight_slot)
-        if slot is None:
-            # Last resort (see _OutQueue's docstring): every slot already
-            # holds an echo of its own. Reachable only if OUT_QUEUE_LEN is
-            # undersized for how many channels are actually in flight at
-            # once; logged loudly because losing an echo is exactly what
-            # this module exists to prevent.
-            log.error("channel %d: echo %d lost, output queue exhausted", channel, echo_id)
-            return
-        if self._queue.evicted:
-            self._rx_overflow_pending = True
-        buf = self._queue.buffer(slot)
         protocol.pack_classic_frame_into(
-            buf, 0, echo_id, ident, can_dlc, channel, 0, data, eff=eff, rtr=rtr
+            self._echo_scratch, 0, echo_id, ident, can_dlc, channel, 0, data, eff=eff, rtr=rtr
         )
+        if not self._echo_ring.write(self._echo_scratch):
+            # Unreachable by construction: the ring holds the host's whole
+            # outstanding-transmit window per channel, so it cannot be full of
+            # echoes the host has not yet been sent. Counted rather than
+            # trusted, because R12 is what this class exists to hold.
+            self._n_echo_lost += 1
+            return
         self._kick_in()
 
     # -- receive ----------------------------------------------------------------
 
     def _on_rx(self, channel, can_id, data, flags, errors):
-        slot = self._queue.reserve(is_echo=False)
-        if slot is None:
-            self._rx_overflow_pending = True
-            log.warning("channel %d: RX frame dropped, output queue full", channel)
-            return
-
+        # The overflow flag rides on the next frame that gets through, so it is
+        # decided before the write and only cleared once one has.
         overflow = bool(errors) or self._rx_overflow_pending
-        self._rx_overflow_pending = False
-
         eff = bool(flags & _CAN_MSG_FLAG_EXT_ID)
         rtr = bool(flags & _CAN_MSG_FLAG_RTR)
         wire_flags = protocol.CAN_FLAG_OVERFLOW if overflow else 0
         can_dlc = protocol.len_to_dlc(len(data))
 
-        buf = self._queue.buffer(slot)
         protocol.pack_classic_frame_into(
-            buf,
+            self._rx_scratch,
             0,
             protocol.ECHO_ID_RX,
             can_id,
@@ -828,4 +724,29 @@ class GsUsbDataPlane:
             eff=eff,
             rtr=rtr,
         )
+        if not self._rx_ring.write(self._rx_scratch):
+            self._rx_overflow_pending = True
+            self._n_rx_dropped += 1
+            return
+        self._rx_overflow_pending = False
         self._kick_in()
+
+    def counters(self):
+        """Everything the data path would otherwise have logged.
+
+        Reported here rather than written out where it happens: these fire when
+        the device is already behind, and a log line on this path is milliseconds
+        of blocking UART plus an allocation, which makes the problem worse than
+        the reporting is worth.
+        """
+        return {
+            "echo_lost": self._n_echo_lost,
+            "rx_dropped": self._n_rx_dropped,
+            "in_submit_failed": self._n_in_submit_failed,
+            "in_xfer_failed": self._n_in_xfer_failed,
+            "out_xfer_bad": self._n_out_xfer_bad,
+            "out_arm_failed": self._n_out_arm_failed,
+            "out_processing_failed": self._n_out_processing_failed,
+            "tx_bad_channel": self._n_tx_bad_channel,
+            "tx_not_started": self._n_tx_not_started,
+        }

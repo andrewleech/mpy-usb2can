@@ -191,6 +191,12 @@ CLASSIC_DATA_SIZE = 8
 FRAME_SIZE_CLASSIC = FRAME_HEADER_SIZE + CLASSIC_DATA_SIZE  # 20
 FRAME_SIZE_CLASSIC_TS = FRAME_SIZE_CLASSIC + 4  # 24
 
+# Zero padding for short payloads, preallocated so that padding a frame copies
+# from an existing buffer instead of building `bytes(n)` per call.
+_ZERO_PAD = bytes(CLASSIC_DATA_SIZE)
+_ZERO_PAD_VIEWS = [memoryview(_ZERO_PAD)[0:n] for n in range(CLASSIC_DATA_SIZE + 1)]
+
+
 _TIMESTAMP_FMT = "<I"
 # The header's first 4 bytes (echo_id); pack_classic_frame_into writes the
 # can_id field that follows it byte by byte instead, see that function's
@@ -271,9 +277,15 @@ def pack_classic_frame_into(
     buf[offset + 10] = flags
     buf[offset + 11] = 0  # reserved
 
+    # Slice assignment rather than a byte loop: it is one memcpy in C against
+    # eight interpreted iterations, and neither form allocates as long as the
+    # source is already a buffer (slicing it here would).
     payload_offset = offset + FRAME_HEADER_SIZE
-    for i in range(CLASSIC_DATA_SIZE):
-        buf[payload_offset + i] = data[i] if i < data_len else 0
+    buf[payload_offset : payload_offset + data_len] = data
+    if data_len < CLASSIC_DATA_SIZE:
+        buf[payload_offset + data_len : payload_offset + CLASSIC_DATA_SIZE] = _ZERO_PAD_VIEWS[
+            CLASSIC_DATA_SIZE - data_len
+        ]
 
     if timestamp_us is None:
         return FRAME_SIZE_CLASSIC
@@ -318,6 +330,10 @@ def unpack_classic_frame_into(buf, offset: int, out, data_out, with_timestamp: b
     out[7] = bool(top & 0x20)
     # offset + 11 is the reserved byte; no consumer reads it.
 
+    # A byte loop, deliberately. The pack direction slice-assigns into a
+    # buffer, which copies in C and allocates nothing; unpacking needs a source
+    # object for the right-hand side, and building one allocates a memoryview
+    # per call. Eight interpreted iterations are cheaper than that.
     payload_offset = offset + FRAME_HEADER_SIZE
     for i in range(CLASSIC_DATA_SIZE):
         data_out[i] = buf[payload_offset + i]

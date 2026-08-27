@@ -94,6 +94,10 @@ class GsUsbApp:
         self.plane = device_mod.GsUsbDataPlane(
             self.core, self.usb, echo_on_write=self._echo_on_write
         )
+        # A channel stopped by MODE RESET will never report another transmit
+        # completion, so the data plane has to resolve what it is holding for
+        # that channel rather than wait for one.
+        self.control.on_channel_stopped = self.plane.flush_channel
         self.usb.active(True)
         self.plane.start()
         log.info("gs_usb device active, %d channel(s)", self.core.num_channels)
