@@ -1,0 +1,8 @@
+# micropython-branch-manager (mbm)
+# Install: pip install micropython-branch-manager
+#          or: uv tool install micropython-branch-manager
+# Usage:   mbm --help
+
+submodules = [
+    { path = "src/micropython", integration_branch = "usb2can-integration", branches = [] },
+]
