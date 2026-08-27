@@ -80,6 +80,13 @@
 #define MICROPY_HW_LED_OFF(pin)             (mp_hal_pin_low(pin))
 
 // USB config
+// Use TinyUSB rather than the legacy ST usbdev stack, so machine.USBDevice
+// (the base the gs_usb vendor interface is built on in a later phase) is
+// available. This also auto-enables MICROPY_HW_ENABLE_USBDEV,
+// MICROPY_HW_USB_CDC and MICROPY_HW_ENABLE_USB_RUNTIME_DEVICE, and it drives
+// MICROPY_HW_STM_USB_STACK to 0, which compiles out usb.c (the legacy ST
+// usbdev stack, including pyb.usb_mode()) entirely.
+#define MICROPY_HW_TINYUSB_STACK             (1)
 #define MICROPY_HW_USB_FS                   (1)
 #define MICROPY_HW_USB_MAIN_DEV             (USB_PHY_FS_ID)
 
@@ -94,8 +101,28 @@
 #define MICROPY_HW_ETH_RMII_TXD0    (pin_G13)
 #define MICROPY_HW_ETH_RMII_TXD1    (pin_B15)
 
+// FDCAN bus
+#define MICROPY_HW_CAN1_NAME        "FDCAN1"
+#define MICROPY_HW_CAN1_TX          (pin_D1)
+#define MICROPY_HW_CAN1_RX          (pin_D0)
+
+// Check the board user manual for the solder bridge and jumper configuration
+// of PB13 and PB12 before wiring a transceiver to FDCAN2.
+#define MICROPY_HW_CAN2_NAME        "FDCAN2"
+#define MICROPY_HW_CAN2_TX          (pin_B13)
+#define MICROPY_HW_CAN2_RX          (pin_B12)
+
 // Project USB configuration.
-#define MICROPY_HW_USB_CDC_NUM (2)
+// MICROPY_HW_USB_HID has no TinyUSB HID class to enable in this port (it
+// only gates the legacy ST stack's HID code, none of which is built into
+// the TinyUSB descriptor), so 0 is correct under either stack.
+// MICROPY_HW_USB_CDC_NUM is 1 because TinyUSB's shared CDC driver provides
+// exactly one CDC interface (MICROPY_HW_USB_CDC is 0 or 1, never
+// multi-instance), so 1 matches what enumerates. Note this define is not
+// confined to the application: mboot compiles ports/stm32/usbd_conf.c, which
+// reads it to size the PCD endpoint allocation, so changing it also changes
+// the bootloader's USB setup.
+#define MICROPY_HW_USB_CDC_NUM (1)
 #define MICROPY_HW_USB_MSC (0)
 #define MICROPY_HW_USB_HID (0)
 

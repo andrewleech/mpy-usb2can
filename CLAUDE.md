@@ -75,13 +75,20 @@ baremetal.
 
 ## Hardware Notes
 
-- FDCAN1 is on PD0/PD1; FDCAN2 is on PB12 with PB13/PB6, and PB13 requires jumper JP6 to be
-  removed. The board definition copied from upstream has no `MICROPY_HW_CAN*` defines yet.
+- FDCAN1 is on PD1 (TX) and PD0 (RX); FDCAN2 is on PB13 (TX) and PB12 (RX), all AF9, per
+  `boards/stm32h573_af.csv`. Board-level solder bridge and jumper configuration of these pins
+  is unverified; check the board user manual before wiring a transceiver.
 - The Nucleo has no onboard CAN transceiver. Dual-channel needs two external CAN-FD
   transceivers.
-- FDCAN message RAM is a single block shared between instances and must be partitioned
-  explicitly. Overlapping partitions corrupt silently and present as intermittent frame loss,
-  so assert on the partition layout at initialisation.
+- FDCAN message RAM on the H5 has a fixed per-instance SRAMCAN layout, set by compile-time
+  constants in the HAL rather than configured at init: 28 standard filters, 3 elements per Rx
+  FIFO, 3 in the Tx FIFO/queue. There is no `MessageRAMOffset` field as there is on H7, so
+  there is nothing to partition and nothing to assert on. The binding constraint is the depth:
+  3 elements per Rx FIFO leaves very little slack for a frame-forwarding adapter.
+- H5 FDCAN is not enabled in the port. `MICROPY_HW_ENABLE_FDCAN` is defined only for
+  STM32G0/G4/H7/N6 (`mpconfigboard_common.h:746`), and the Makefile's CAN HAL selection
+  (`Makefile:426-431`) matches `f0 f4 f7`, `g0 g4 h7 n6` and `l4` but not `h5`, so no CAN HAL
+  is compiled at all. Enabling it is a port change, and an upstreamable one.
 - Upstream marks the H5 mboot linker configuration as untested. Keep ST-LINK flashing
   available as a fallback.
 

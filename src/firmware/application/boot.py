@@ -28,6 +28,13 @@ def usb_init():
     import pyb
     from machine import SOFT_RESET, reset_cause
 
+    # pyb.usb_mode() configures the legacy ST USB stack; it does not exist
+    # when the board is built with MICROPY_HW_TINYUSB_STACK. The USB
+    # identity is configured through machine.USBDevice instead, done
+    # elsewhere as part of the gs_usb runtime device setup.
+    if not hasattr(pyb, "usb_mode"):
+        return
+
     # Do not change the USB mode on SOFT_RESET.
     if reset_cause() == SOFT_RESET:
         return
