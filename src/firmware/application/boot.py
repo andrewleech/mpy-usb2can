@@ -54,7 +54,12 @@ def filesystem_format():
     import pyb
     import vfs
 
-    vfs.VfsLfs2.mkfs(pyb.Flash(start=0))
+    vfs.VfsLfs2.mkfs(pyb.Flash(start=0, len=FLASH_LEN))
+
+
+# Extent of the internal-flash filesystem. The same value must be used to
+# format and to mount, or the two disagree about where the filesystem ends.
+FLASH_LEN = 64 * 1024
 
 
 def mount():
@@ -63,7 +68,7 @@ def mount():
     import pyb
     import vfs
 
-    flash = pyb.Flash(start=0, len=(64 * 1024))
+    flash = pyb.Flash(start=0, len=FLASH_LEN)
     vfs.mount(vfs.VfsLfs2(flash, mtime=False), "/", readonly=False)
 
 
@@ -103,4 +108,10 @@ def filesystem_init():
     mount()
 
 
-filesystem_init()
+try:
+    filesystem_init()
+except Exception as exc:  # noqa: BLE001 - boot must continue without storage
+    # The adapter's own function needs no filesystem, so a storage failure
+    # is reported and stepped over rather than left to abort the rest of
+    # boot and everything main.py would have started.
+    print("filesystem unavailable:", exc)

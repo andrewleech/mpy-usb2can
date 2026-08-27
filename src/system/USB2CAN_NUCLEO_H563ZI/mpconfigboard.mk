@@ -18,6 +18,9 @@ TEXT0_ADDR = 0x08000000
 endif
 
 # MicroPython settings
+# boot.py mounts the internal flash as LFS2; without this the VfsLfs2 class
+# does not exist and nothing can be mounted.
+MICROPY_VFS_LFS2 = 1
 MICROPY_PY_LWIP = 1
 MICROPY_PY_SSL = 1
 MICROPY_SSL_MBEDTLS = 1
