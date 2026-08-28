@@ -10,4 +10,5 @@ branches = [
     { name = "feature/usbd-runtime-vendor-control" },
     { name = "feature/stm32-h5-fdcan" },
     { name = "feature/usbd-bos-descriptor" },
+    { name = "feature/stm32-can-rxbuf" },
 ]
