@@ -328,8 +328,13 @@ class TestEchoCapacityIsGuaranteed(unittest.TestCase):
             # what is under test, not CanCore's.
             can.complete_tx()
         self.assertEqual(dev.counters()["echo_lost"], 0)
-        # One is in flight on bulk IN, the rest are queued rather than lost.
-        self.assertEqual(dev._echo_ring.pending(), device.ECHO_FRAMES_PER_CHANNEL - 1)
+        # Those that fit the bulk IN queue have left the ring for a transfer
+        # buffer; the rest are queued rather than lost. Capacity is unaffected,
+        # since a frame in flight is no longer occupying the ring.
+        self.assertEqual(
+            dev._echo_ring.pending(),
+            device.ECHO_FRAMES_PER_CHANNEL - device.IN_XFER_QUEUE,
+        )
 
     def test_receives_cannot_crowd_echoes_out(self):
         # Receives have their own ring, so a receive burst cannot consume the
@@ -415,8 +420,11 @@ class TestReset(unittest.TestCase):
         self.assertTrue(dev._tx_pending)
         self.assertFalse(usb_device.EP_BULK_OUT in fake.pending)
 
-        can.inject(0x300, b"\x01")  # becomes the in-flight bulk-IN transfer
-        can.inject(0x400, b"\x02")  # queued behind it, no free slot yet
+        # One more than the bulk IN transfers that can be outstanding, so that
+        # after the endpoint and its staging buffer are both taken there is
+        # still a frame left in a ring for reset() to discard.
+        for i in range(device.IN_XFER_QUEUE + 2):
+            can.inject(0x300 + i, b"\x01")
 
         self.assertTrue(dev._in_flight)
         self.assertTrue(dev._rx_ring.pending() or dev._echo_ring.pending())

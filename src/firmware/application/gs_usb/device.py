@@ -5,14 +5,17 @@ that wiring's asyncio lifecycle.
 
 Endpoint discipline
 --------------------
-machine.USBDevice.submit_xfer() accepts only one outstanding transfer per
-endpoint at a time. Bulk IN carries two kinds of traffic, received
-frames and TX echoes, so `_FrameRing` below backs both with preallocated
-storage: a CAN interrupt that fires while a previous frame is still
-being clocked out over USB queues behind it instead of being lost. The
-two kinds get separate rings so that a burst of receives can never
-crowd out an echo the host is waiting on. Bulk OUT only ever has one host frame being unpacked at a time,
-into a single reused buffer, because the endpoint is re-armed only once
+machine.USBDevice.submit_xfer() takes a short queue per endpoint, and
+`IN_XFER_QUEUE` bulk IN transfers are kept outstanding so the controller
+has the next one to start the moment one finishes. Bulk IN carries two
+kinds of traffic, received frames and TX echoes, so `_FrameRing` below
+backs both with preallocated storage: a CAN interrupt that fires while a
+previous frame is still being clocked out over USB queues behind it
+instead of being lost. The two kinds get separate rings so that a burst
+of receives can never crowd out an echo the host is waiting on.
+
+Bulk OUT only ever has one host frame being unpacked at a time, into a
+single reused buffer, because the endpoint is re-armed only once
 that frame is fully resolved: submitted to CanCore, rejected outright
 with its echo already queued, or retried until CanCore has room for it
 (F10, see `_try_submit_pending`).
@@ -178,6 +181,13 @@ ECHO_FRAMES_PER_CHANNEL = 10
 # absorbs roughly 80ms of a 2000 frame/s burst for 1.5 kB of RAM.
 RX_RING_FRAMES = 64
 
+# Bulk IN transfers to keep outstanding. One leaves the endpoint idle from the
+# moment a transfer completes until this code has run and submitted the next;
+# a second means the controller always has one to start. Ports whose
+# submit_xfer() takes only one at a time report EBUSY for the second, which
+# costs nothing but the attempt.
+IN_XFER_QUEUE = 2
+
 
 class _FrameRing:
     """
@@ -274,13 +284,19 @@ class GsUsbDataPlane:
         self._rx_scratch = bytearray(protocol.FRAME_SIZE_CLASSIC)
         self._rx_overflow_pending = False
 
-        # The one buffer bulk IN transfers are submitted from. Held across a
-        # transfer, so `_in_flight` is what keeps a second frame from being
-        # read over the top of one the controller is still sending; that is
-        # only sound because every entry point into this class runs inside the
-        # scheduler's locked drain.
-        self._in_buf = bytearray(protocol.FRAME_SIZE_CLASSIC)
-        self._in_flight = False
+        # Buffers bulk IN transfers are submitted from, one per transfer that
+        # may be outstanding at once. Each is held for the length of its
+        # transfer, so a frame is never read over the top of one the controller
+        # is still sending.
+        #
+        # Which buffer to fill next follows from how many transfers have
+        # completed plus how many are still in flight, rather than being
+        # tracked separately: `_kick_in()` reenters, because a submission can
+        # complete before `submit_xfer()` returns, and separate bookkeeping
+        # drifts out of step with the transfers when it does.
+        self._in_bufs = [bytearray(protocol.FRAME_SIZE_CLASSIC) for _ in range(IN_XFER_QUEUE)]
+        self._in_flight = 0
+        self._in_done = 0
         self._in_staged = False
 
         # Counted rather than logged: these fire exactly when the device is
@@ -386,7 +402,8 @@ class GsUsbDataPlane:
         hardware queue still completes and still calls on_tx_complete
         normally, so the correlation table is left alone here.
         """
-        self._in_flight = False
+        self._in_flight = 0
+        self._in_done = 0
         self._in_staged = False
         self._out_armed = False
         self._tx_pending = False
@@ -512,30 +529,42 @@ class GsUsbDataPlane:
         on the next one; a dropped echo cannot be signalled at all, so echoes
         go first whenever both are waiting.
 
+        Submits up to `IN_XFER_QUEUE` transfers, so the controller has the
+        next one to start the moment the current one finishes.
+
         A frame read out of a ring but not accepted by submit_xfer() stays in
-        `_in_buf` with `_in_staged` set rather than being lost, since it is no
-        longer in the ring to be found again.
+        its buffer with `_in_staged` set rather than being lost, since it is no
+        longer in the ring to be found again. That buffer is the one the next
+        call selects, because the counts it derives from are unchanged.
         """
-        if self._in_flight:
-            return
-        if not self._in_staged:
-            if not self._echo_ring.readinto(self._in_buf):
-                if not self._rx_ring.readinto(self._in_buf):
-                    return
-            self._in_staged = True
-        try:
-            armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, self._in_buf)
-        except OSError:  # F19; see _arm_out's matching comment
-            self._n_in_submit_failed += 1
-            return
-        if armed:
-            self._in_flight = True
+        while self._in_flight < IN_XFER_QUEUE:
+            buf = self._in_bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
+            if not self._in_staged:
+                if not self._echo_ring.readinto(buf):
+                    if not self._rx_ring.readinto(buf):
+                        return
+            # Count it out before submitting, and only put that back if the
+            # submission does not happen: once it does, the completion may run
+            # before submit_xfer() returns and it undoes both of these.
+            self._in_flight += 1
             self._in_staged = False
+            try:
+                armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, buf)
+            except OSError:  # F19; see _arm_out's matching comment
+                self._in_flight -= 1
+                self._in_staged = True
+                self._n_in_submit_failed += 1
+                return
+            if not armed:
+                self._in_flight -= 1
+                self._in_staged = True
+                return
 
     def _handle_in_done(self, result):
         if result != _XFER_SUCCESS:
             self._n_in_xfer_failed += 1
-        self._in_flight = False
+        self._in_done += 1
+        self._in_flight -= 1
         self._kick_in()
 
     def _handle_out_done(self, result, xferred_bytes):
