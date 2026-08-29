@@ -175,10 +175,17 @@ _IDLE_POLL_MS = 1000
 ECHO_FRAMES_PER_CHANNEL = 10
 
 # Receives get their own ring, sized to ride out a burst arriving faster than
-# the bulk IN endpoint drains it. Only one transfer may be outstanding per
-# endpoint, which holds sustained delivery to about 1250 frames/s; past that
-# this ring is the only thing between an arriving frame and a drop. 64 frames
-# absorbs roughly 80ms of a 2000 frame/s burst for 1.5 kB of RAM.
+# the bulk IN endpoint drains it. Sustained delivery is about 1680 frames/s at
+# 1 Mbit; past that this ring is the only thing between an arriving frame and a
+# drop, since the controller's own receive ring is emptied into it as fast as
+# frames arrive and so never holds anything back.
+#
+# Depth buys burst tolerance and costs sustained capacity, because a frame is
+# formatted before it is admitted and a deeper ring defers the discard until
+# after that work is paid for. Measured at 1 Mbit: 64 frames absorbs an 80
+# frame burst and delivers 1349 frame/s under overload, 128 absorbs 130 at
+# 1300 frame/s, 256 absorbs 250 at 1210 frame/s. Revisit once formatting is
+# cheap, which is what makes depth expensive.
 RX_RING_FRAMES = 64
 
 # Bulk IN transfers to keep outstanding. One leaves the endpoint idle from the
@@ -208,6 +215,15 @@ class _FrameRing:
         self._frame_size = frame_size
         self._capacity = frames * frame_size
         self._ring = micropython.RingIO(self._capacity)
+
+    def has_room(self):
+        """True when a whole frame would be admitted.
+
+        Lets a producer discard a frame it cannot deliver before paying to
+        format it, which is what keeps an overloaded receive path from
+        spending its time on frames it is about to throw away.
+        """
+        return self._capacity - self._ring.any() >= self._frame_size
 
     def write(self, frame):
         """Append one whole frame, or nothing. True when it was taken."""
@@ -751,6 +767,16 @@ class GsUsbDataPlane:
     # -- receive ----------------------------------------------------------------
 
     def _on_rx(self, channel, can_id, data, flags, errors):
+        # Discarding costs one capacity test, delivering costs a frame format,
+        # so a full ring is tested before any work is done. Formatting frames
+        # that are then dropped takes the processor away from the delivery path
+        # that would empty the ring, which makes an overloaded receive path
+        # deliver less than a merely busy one.
+        if not self._rx_ring.has_room():
+            self._rx_overflow_pending = True
+            self._n_rx_dropped += 1
+            return
+
         # The overflow flag rides on the next frame that gets through, so it is
         # decided before the write and only cleared once one has.
         overflow = bool(errors & _CAN_RECV_ERR_OVERRUN) or self._rx_overflow_pending

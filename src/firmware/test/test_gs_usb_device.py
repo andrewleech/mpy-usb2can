@@ -350,6 +350,25 @@ class TestEchoCapacityIsGuaranteed(unittest.TestCase):
         self.assertEqual(dev.counters()["echo_lost"], 0)
         self.assertTrue(dev.counters()["rx_dropped"] > 0)
 
+    def test_a_frame_that_cannot_be_admitted_is_not_formatted(self):
+        # Formatting is the most expensive thing done per frame, and doing it
+        # for frames that are then discarded takes the processor away from the
+        # delivery path, so an overloaded receive path delivers less than a
+        # merely busy one. The scratch buffer is the evidence: it must not be
+        # touched once the ring is full.
+        core, fake, dev = make()
+        can = bring_up_channel(core)
+        dev.start()
+        while dev._rx_ring.has_room():
+            can.inject(0x400, b"\x01")
+        untouched = bytes(dev._rx_scratch)
+        before = dev.counters()["rx_dropped"]
+
+        can.inject(0x7FF, b"\xff\xff\xff\xff")
+
+        self.assertEqual(bytes(dev._rx_scratch), untouched)
+        self.assertEqual(dev.counters()["rx_dropped"], before + 1)
+
 
 class TestEchoOnCompletionPolicy(unittest.TestCase):
     """F21: constructing with echo_on_write=False is the entire policy
@@ -432,7 +451,7 @@ class TestReset(unittest.TestCase):
         dev.reset()
 
         self.assertFalse(dev._in_flight)
-        self.assertFalse(dev._in_staged)
+        self.assertIsNone(dev._in_staged_buf)
         self.assertFalse(dev._out_armed)
         self.assertFalse(dev._tx_pending)
         self.assertEqual(dev._echo_ring.pending(), 0)
@@ -582,7 +601,7 @@ class TestSubmitXferOSError(unittest.TestCase):
         self.assertFalse(dev._in_flight)
         # The frame was read out of the ring before submit_xfer refused it, so
         # it is held staged rather than lost, and a later kick retries it.
-        self.assertTrue(dev._in_staged)
+        self.assertIsNotNone(dev._in_staged_buf)
         self.assertEqual(dev.counters()["in_submit_failed"], 1)
 
 
