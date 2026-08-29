@@ -161,10 +161,12 @@ _IDLE_POLL_MS = 1000
 # is the most it can ever be owed at once.
 ECHO_FRAMES_PER_CHANNEL = 10
 
-# Receives get their own ring. The controller's own RX FIFO is three elements
-# deep, so depth much beyond that buys nothing: a burst that outruns this ring
-# has already outrun the hardware.
-RX_RING_FRAMES = 16
+# Receives get their own ring, sized to ride out a burst arriving faster than
+# the bulk IN endpoint drains it. Only one transfer may be outstanding per
+# endpoint, which holds sustained delivery to about 1250 frames/s; past that
+# this ring is the only thing between an arriving frame and a drop. 64 frames
+# absorbs roughly 80ms of a 2000 frame/s burst for 1.5 kB of RAM.
+RX_RING_FRAMES = 64
 
 
 class _FrameRing:

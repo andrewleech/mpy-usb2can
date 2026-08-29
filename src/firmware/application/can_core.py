@@ -72,6 +72,13 @@ class CanCore:
     that only happens on target.
     """
 
+    # Frames the controller can hold while this code is busy elsewhere. The
+    # H5's hardware RX FIFO is 3 elements, which at 1 Mbit is under 400us of
+    # tolerance, so a real bus delivering frames back to back overruns it
+    # before an interrupt-driven drain can keep up. machine.CAN's software
+    # ring absorbs that; 64 frames is roughly 7ms at the highest classic rate.
+    RX_RING_FRAMES = 64
+
     def __init__(self, num_channels=2, can_class=None):
         self._can_class = can_class
         self._channels = [_Channel(i) for i in range(num_channels)]
@@ -145,25 +152,27 @@ class CanCore:
         can_class = self.resolve_can_class()
         if mode is None:
             mode = can_class.MODE_NORMAL
+        # rxbuf is only accepted by ports carrying the software receive ring;
+        # elsewhere it is an unexpected keyword, so fall back rather than
+        # refusing to run at all.
+        kwargs = {
+            "bitrate": bitrate,
+            "mode": mode,
+            "sample_point": sample_point,
+            "sjw": sjw,
+            "tseg1": tseg1,
+            "tseg2": tseg2,
+        }
         if ch.can is None:
-            ch.can = can_class(
-                channel_index + 1,
-                bitrate=bitrate,
-                mode=mode,
-                sample_point=sample_point,
-                sjw=sjw,
-                tseg1=tseg1,
-                tseg2=tseg2,
-            )
+            try:
+                ch.can = can_class(channel_index + 1, rxbuf=self.RX_RING_FRAMES, **kwargs)
+            except TypeError:
+                ch.can = can_class(channel_index + 1, **kwargs)
         else:
-            ch.can.init(
-                bitrate=bitrate,
-                mode=mode,
-                sample_point=sample_point,
-                sjw=sjw,
-                tseg1=tseg1,
-                tseg2=tseg2,
-            )
+            try:
+                ch.can.init(rxbuf=self.RX_RING_FRAMES, **kwargs)
+            except TypeError:
+                ch.can.init(**kwargs)
         # Promiscuous by default (R14): the power-on state accepts nothing
         # until set_filters() is called at least once (F27), so this call is
         # what makes the channel a promiscuous frame source rather than a
