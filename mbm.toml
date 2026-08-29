@@ -11,4 +11,14 @@ branches = [
     { name = "feature/stm32-h5-fdcan" },
     { name = "feature/usbd-bos-descriptor" },
     { name = "feature/stm32-can-rxbuf" },
+    { name = "feature/stm32-can-rx-ordering" },
+    { name = "feature/usbd-xfer-queue" },
+    { name = "feature/stm32-sched-wfe" },
+]
+
+[[submodules]]
+path = "src/libs/micropython-lib"
+integration_branch = "feature/usbd-xfer-queue"
+branches = [
+    { name = "feature/usbd-xfer-queue" },
 ]
