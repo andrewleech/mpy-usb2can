@@ -297,7 +297,13 @@ class GsUsbDataPlane:
         self._in_bufs = [bytearray(protocol.FRAME_SIZE_CLASSIC) for _ in range(IN_XFER_QUEUE)]
         self._in_flight = 0
         self._in_done = 0
-        self._in_staged = False
+        # The buffer holding a frame read out of a ring that submit_xfer() did
+        # not accept, or None. Held as the buffer itself rather than a flag,
+        # because the frame belongs to one specific buffer: a completion
+        # arriving before the retry moves what the rotation would pick next,
+        # and submitting that instead would send a stale frame and lose this
+        # one with nothing to count it.
+        self._in_staged_buf = None
 
         # Counted rather than logged: these fire exactly when the device is
         # already behind, and a log line is milliseconds of blocking UART plus
@@ -404,7 +410,7 @@ class GsUsbDataPlane:
         """
         self._in_flight = 0
         self._in_done = 0
-        self._in_staged = False
+        self._in_staged_buf = None
         self._out_armed = False
         self._tx_pending = False
         self._echo_ring.reset()
@@ -533,13 +539,13 @@ class GsUsbDataPlane:
         next one to start the moment the current one finishes.
 
         A frame read out of a ring but not accepted by submit_xfer() stays in
-        its buffer with `_in_staged` set rather than being lost, since it is no
-        longer in the ring to be found again. That buffer is the one the next
-        call selects, because the counts it derives from are unchanged.
+        `_in_staged_buf` rather than being lost, since it is no longer in the
+        ring to be found again, and the next call submits that same buffer.
         """
         while self._in_flight < IN_XFER_QUEUE:
-            buf = self._in_bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
-            if not self._in_staged:
+            buf = self._in_staged_buf
+            if buf is None:
+                buf = self._in_bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
                 if not self._echo_ring.readinto(buf):
                     if not self._rx_ring.readinto(buf):
                         return
@@ -547,17 +553,17 @@ class GsUsbDataPlane:
             # submission does not happen: once it does, the completion may run
             # before submit_xfer() returns and it undoes both of these.
             self._in_flight += 1
-            self._in_staged = False
+            self._in_staged_buf = None
             try:
                 armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, buf)
             except OSError:  # F19; see _arm_out's matching comment
                 self._in_flight -= 1
-                self._in_staged = True
+                self._in_staged_buf = buf
                 self._n_in_submit_failed += 1
                 return
             if not armed:
                 self._in_flight -= 1
-                self._in_staged = True
+                self._in_staged_buf = buf
                 return
 
     def _handle_in_done(self, result):
