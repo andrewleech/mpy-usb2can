@@ -141,9 +141,10 @@ class CanCore:
         stopped: the controller cannot be retimed while it is arbitrating on
         the bus. The controller starts participating on the bus as soon as
         this returns, ahead of `start()`, which only wires interrupt-driven
-        draining; `start()` flushes whatever arrived in that window, but
-        more than the 3-deep RX FIFO's worth of it overflows before there is
-        anything to flush."""
+        draining. Frames arriving in that window are held by the software
+        receive ring requested below, so `start()` can flush up to
+        `RX_RING_FRAMES` of them rather than the three the hardware FIFO
+        would otherwise have kept."""
         ch = self._channel(channel_index)
         if ch.started:
             raise RuntimeError(
