@@ -7,10 +7,11 @@ Endpoint discipline
 --------------------
 machine.USBDevice.submit_xfer() accepts only one outstanding transfer per
 endpoint at a time. Bulk IN carries two kinds of traffic, received
-frames and TX echoes, so `_OutQueue` below is a single preallocated
-queue shared by both: a CAN interrupt that fires while a previous frame
-is still being clocked out over USB queues behind it instead of being
-lost. Bulk OUT only ever has one host frame being unpacked at a time,
+frames and TX echoes, so `_FrameRing` below backs both with preallocated
+storage: a CAN interrupt that fires while a previous frame is still
+being clocked out over USB queues behind it instead of being lost. The
+two kinds get separate rings so that a burst of receives can never
+crowd out an echo the host is waiting on. Bulk OUT only ever has one host frame being unpacked at a time,
 into a single reused buffer, because the endpoint is re-armed only once
 that frame is fully resolved: submitted to CanCore, rejected outright
 with its echo already queued, or retried until CanCore has room for it
@@ -89,13 +90,17 @@ Overflow signalling
 ---------------------
 `gs_host_frame.flags` carries `CAN_FLAG_OVERFLOW` to tell the host
 frames were dropped before this one. Two independent sources set it on
-an RX frame: CanCore's own `errors` argument to `on_rx`
-(`RECV_ERR_FULL`/`RECV_ERR_OVERRUN`, already attached by the hardware
-and CanCore to the first frame that made it through after a drop), and
-this module's own `_rx_overflow_pending`, set when the output queue has
-no free slot for an RX frame, or when an echo evicts one already queued
-(see `_OutQueue`). Both feed the same wire bit; the host does not
-distinguish where a drop happened, only that one did.
+an RX frame: `RECV_ERR_OVERRUN` in CanCore's `errors` argument to
+`on_rx`, attached by the hardware to the first frame through after the
+controller lost one, and this module's own `_rx_overflow_pending`, set
+when the receive ring had no free slot. Both feed the same wire bit;
+the host does not distinguish where a drop happened, only that one did.
+
+`errors` also carries `RECV_ERR_FULL`, which is deliberately ignored
+here. It means the controller's receive FIFO reached capacity, not that
+anything was discarded, and a device driven near its delivery rate
+reaches that state routinely. Reporting it would tell the host it had
+lost frames it in fact received.
 
 Zero allocation (R10)
 ------------------------
@@ -133,6 +138,11 @@ log = logging.getLogger("gs_usb.device")
 # transmit and misclassify extended-id frames on receive.
 _CAN_MSG_FLAG_RTR = 1 << 0
 _CAN_MSG_FLAG_EXT_ID = 1 << 1
+
+# machine.CAN's RECV_ERR_OVERRUN, mirrored for the same reason. Only the
+# overrun bit means a frame was lost; RECV_ERR_FULL (1 << 0) reports a
+# full FIFO, which is a normal state under load and not a drop.
+_CAN_RECV_ERR_OVERRUN = 1 << 1
 
 # machine.USBDevice.xfer_cb's XFER_SUCCESS (machine.USBDevice.rst).
 # Reproduced rather than imported so this module never touches machine at
@@ -708,7 +718,7 @@ class GsUsbDataPlane:
     def _on_rx(self, channel, can_id, data, flags, errors):
         # The overflow flag rides on the next frame that gets through, so it is
         # decided before the write and only cleared once one has.
-        overflow = bool(errors) or self._rx_overflow_pending
+        overflow = bool(errors & _CAN_RECV_ERR_OVERRUN) or self._rx_overflow_pending
         eff = bool(flags & _CAN_MSG_FLAG_EXT_ID)
         rtr = bool(flags & _CAN_MSG_FLAG_RTR)
         wire_flags = protocol.CAN_FLAG_OVERFLOW if overflow else 0

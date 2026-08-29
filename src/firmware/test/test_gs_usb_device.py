@@ -132,6 +132,31 @@ class TestReceivePath(unittest.TestCase):
         self.assertEqual([d[1] for d in decoded], [0x100, 0x101, 0x102])  # 0x103 was dropped
         self.assertTrue(any(d[4] & protocol.CAN_FLAG_OVERFLOW for d in decoded))
 
+    def test_a_full_rx_fifo_that_dropped_nothing_does_not_signal_overflow(self):
+        """RECV_ERR_FULL says the FIFO reached capacity, not that a frame was
+        discarded. A device running near its delivery rate sets it routinely,
+        and passing it on would tell the host it had lost frames it received."""
+        core, fake, dev = make()
+        core.configure(0, 500_000)
+        dev.start()
+
+        can = core._channels[0].can
+        for i in range(3):  # exactly fills the FIFO: full, but nothing dropped
+            can.inject(0x100 + i, bytes([i]))
+        self.assertTrue(can._rx_errors & mock_can.RECV_ERR_FULL)
+        self.assertFalse(can._rx_errors & mock_can.RECV_ERR_OVERRUN)
+
+        core.start(0)
+
+        delivered = []
+        for _ in range(3):
+            delivered.append(in_submits(fake)[-1])
+            fake.complete_in(dev)
+
+        decoded = [decode(buf) for buf in delivered]
+        self.assertEqual([d[1] for d in decoded], [0x100, 0x101, 0x102])
+        self.assertFalse(any(d[4] & protocol.CAN_FLAG_OVERFLOW for d in decoded))
+
 
 class TestTransmitPath(unittest.TestCase):
     def test_single_out_frame_becomes_one_can_transmit(self):
