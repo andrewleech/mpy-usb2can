@@ -375,7 +375,12 @@ class GsUsbDataPlane:
     def start(self):
         """Attach to every channel and arm the initial bulk-OUT read."""
         for channel in range(self._num_channels):
-            self._can.attach(channel, on_rx=self._on_rx, on_tx_complete=self._on_tx_complete)
+            self._can.attach(
+                channel,
+                on_rx=self._on_rx,
+                on_tx_complete=self._on_tx_complete,
+                can_accept=self._rx_ring.has_room,
+            )
         self._arm_out()
         self.run.set()
 

@@ -34,7 +34,17 @@ notifying the consumer of the transition.
 
 import logging
 
+import micropython
+
 log = logging.getLogger("can_core")
+
+# Frames handed to the consumer per interrupt service before yielding. Draining
+# until the controller is empty does not terminate on a bus that produces
+# faster than the consumer retires, so the pass is bounded and the remainder is
+# rescheduled. Large enough that the per-dispatch cost is amortised over
+# several frames, small enough that the consumer's own scheduled work still
+# runs at rate.
+DRAIN_BUDGET = 16
 
 # MP_CAN_MAX_LEN with MICROPY_HW_ENABLE_FDCAN (extmod/machine_can_port.h):
 # both FDCAN instances on this board are FD-capable even though classic CAN
@@ -52,6 +62,8 @@ class _Channel:
         self.started = False
         self.attached = False
         self.on_rx = None
+        self.can_accept = None
+        self.rx_discarded = 0
         self.on_tx_complete = None
         self.on_state_change = None
         # [id, memoryview(data), flags, errors]; can.recv() overwrites every
@@ -113,13 +125,29 @@ class CanCore:
 
     # -- consumer registration -------------------------------------------
 
-    def attach(self, channel_index, on_rx=None, on_tx_complete=None, on_state_change=None):
+    def attach(
+        self,
+        channel_index,
+        on_rx=None,
+        on_tx_complete=None,
+        on_state_change=None,
+        can_accept=None,
+    ):
         """Register the one consumer for a channel. Raises RuntimeError if
-        the channel already has a consumer attached."""
+        the channel already has a consumer attached.
+
+        `can_accept`, when given, is asked whether the consumer has room
+        before a received frame is handed to it. A frame that arrives while
+        it says no is taken off the controller and discarded here, without
+        the consumer being called: on a bus that produces faster than the
+        consumer retires, calling it for frames it is going to refuse is what
+        stops it retiring anything.
+        """
         ch = self._channel(channel_index)
         if ch.attached:
             raise RuntimeError("channel %d already has a consumer attached" % channel_index)
         ch.on_rx = on_rx
+        ch.can_accept = can_accept
         ch.on_tx_complete = on_tx_complete
         ch.on_state_change = on_state_change
         ch.attached = True
@@ -128,6 +156,7 @@ class CanCore:
         """Release the channel's consumer, so a different one may attach."""
         ch = self._channel(channel_index)
         ch.on_rx = None
+        ch.can_accept = None
         ch.on_tx_complete = None
         ch.on_state_change = None
         ch.attached = False
@@ -322,5 +351,31 @@ class CanCore:
                 pass
             return
         index = ch.index
-        while recv(result) is not None:
-            on_rx(index, result[0], result[1], result[2], result[3])
+
+        # Bounded, because draining until the controller is empty is not a
+        # loop that terminates when frames arrive faster than the consumer
+        # retires them. On a saturated bus that starves everything else the
+        # scheduler would have run, including whatever the consumer uses to
+        # deliver the frames it has already been handed, so the channel
+        # delivers almost nothing rather than delivering what it can.
+        can_accept = ch.can_accept
+        budget = DRAIN_BUDGET
+        while budget:
+            if recv(result) is None:
+                return
+            if can_accept is None or can_accept():
+                on_rx(index, result[0], result[1], result[2], result[3])
+            else:
+                # Taken off the controller so nothing strands behind it, and
+                # dropped here rather than through the consumer.
+                ch.rx_discarded += 1
+            budget -= 1
+
+        # Stopped on the budget rather than on an empty controller, so more may
+        # be waiting. Hand the rest to a later pass instead of a longer one.
+        # A full schedule queue is not a problem: on a bus busy enough to reach
+        # this point the next frame's interrupt arrives anyway.
+        try:
+            micropython.schedule(self._service, ch)
+        except RuntimeError:
+            pass
