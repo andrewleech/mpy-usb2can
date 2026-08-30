@@ -34,17 +34,7 @@ notifying the consumer of the transition.
 
 import logging
 
-import micropython
-
 log = logging.getLogger("can_core")
-
-# Frames handed to the consumer per interrupt service before yielding. Draining
-# until the controller is empty does not terminate on a bus that produces
-# faster than the consumer retires, so the pass is bounded and the remainder is
-# rescheduled. Large enough that the per-dispatch cost is amortised over
-# several frames, small enough that the consumer's own scheduled work still
-# runs at rate.
-DRAIN_BUDGET = 16
 
 # MP_CAN_MAX_LEN with MICROPY_HW_ENABLE_FDCAN (extmod/machine_can_port.h):
 # both FDCAN instances on this board are FD-capable even though classic CAN
@@ -358,24 +348,18 @@ class CanCore:
         # scheduler would have run, including whatever the consumer uses to
         # deliver the frames it has already been handed, so the channel
         # delivers almost nothing rather than delivering what it can.
+        # Draining until the controller is empty terminates as long as the
+        # loop outruns arrival, and the consumer is only called for frames it
+        # can take. A frame that arrives with the consumer full still comes off
+        # the controller, so nothing strands behind it, but costs a receive and
+        # a capacity test rather than a delivery.
         can_accept = ch.can_accept
-        budget = DRAIN_BUDGET
-        while budget:
-            if recv(result) is None:
-                return
-            if can_accept is None or can_accept():
+        if can_accept is None:
+            while recv(result) is not None:
+                on_rx(index, result[0], result[1], result[2], result[3])
+            return
+        while recv(result) is not None:
+            if can_accept():
                 on_rx(index, result[0], result[1], result[2], result[3])
             else:
-                # Taken off the controller so nothing strands behind it, and
-                # dropped here rather than through the consumer.
                 ch.rx_discarded += 1
-            budget -= 1
-
-        # Stopped on the budget rather than on an empty controller, so more may
-        # be waiting. Hand the rest to a later pass instead of a longer one.
-        # A full schedule queue is not a problem: on a bus busy enough to reach
-        # this point the next frame's interrupt arrives anyway.
-        try:
-            micropython.schedule(self._service, ch)
-        except RuntimeError:
-            pass

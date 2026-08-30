@@ -379,7 +379,7 @@ class GsUsbDataPlane:
                 channel,
                 on_rx=self._on_rx,
                 on_tx_complete=self._on_tx_complete,
-                can_accept=self._rx_ring.has_room,
+                can_accept=self._can_accept_rx,
             )
         self._arm_out()
         self.run.set()
@@ -788,6 +788,23 @@ class GsUsbDataPlane:
         self._kick_in()
 
     # -- receive ----------------------------------------------------------------
+
+    def _can_accept_rx(self):
+        """Whether a received frame can be delivered, and the record of it if
+        not.
+
+        CanCore asks this before formatting anything, so a frame that arrives
+        with no room costs a capacity test rather than a frame format. The
+        refusal is latched here rather than left to the caller because the
+        overflow flag the host is owed (GS_CAN_FLAG_OVERFLOW) rides on the
+        next frame that does get through, and nothing else on this path would
+        learn that one was lost.
+        """
+        if self._rx_ring.has_room():
+            return True
+        self._rx_overflow_pending = True
+        self._n_rx_dropped += 1
+        return False
 
     def _on_rx(self, channel, can_id, data, flags, errors):
         # Discarding costs one capacity test, delivering costs a frame format,
