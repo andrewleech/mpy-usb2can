@@ -311,8 +311,16 @@ class CanCore:
             ch.on_tx_complete(ch.index, slot, success)
 
     def _drain_rx(self, ch):
-        can = ch.can
+        # Everything the loop needs is resolved once. This runs per received
+        # frame, where repeatedly walking ch to reach the controller, the
+        # consumer and the channel index is a measurable share of the cost.
+        recv = ch.can.recv
         result = ch.rx_result
-        while can.recv(result) is not None:
-            if ch.on_rx is not None:
-                ch.on_rx(ch.index, result[0], result[1], result[2], result[3])
+        on_rx = ch.on_rx
+        if on_rx is None:
+            while recv(result) is not None:
+                pass
+            return
+        index = ch.index
+        while recv(result) is not None:
+            on_rx(index, result[0], result[1], result[2], result[3])

@@ -127,6 +127,7 @@ import asyncio
 import logging
 
 import micropython
+from micropython import const
 
 from gs_usb import protocol, usb_device
 
@@ -150,7 +151,18 @@ _CAN_RECV_ERR_OVERRUN = 1 << 1
 # machine.USBDevice.xfer_cb's XFER_SUCCESS (machine.USBDevice.rst).
 # Reproduced rather than imported so this module never touches machine at
 # load time; the unix port's machine simulation has no USBDevice at all.
-_XFER_SUCCESS = 0
+_XFER_SUCCESS = const(0)
+
+# Bound here rather than reached through usb_device on every transfer: the
+# completion path runs once per frame and a module attribute lookup is not
+# free at that rate.
+_EP_BULK_IN = usb_device.EP_BULK_IN
+_EP_BULK_OUT = usb_device.EP_BULK_OUT
+
+# Bound for the same reason: the receive path reaches these once per frame.
+_pack_classic_frame_into = protocol.pack_classic_frame_into
+_len_to_dlc = protocol.len_to_dlc
+_CAN_FLAG_OVERFLOW = protocol.CAN_FLAG_OVERFLOW
 
 # GS_MAX_TX_URBS ([[20260827_linux_gs_usb_driver.md]] section 6): the
 # Linux host's own bound on concurrently outstanding, un-drained
@@ -193,7 +205,7 @@ RX_RING_FRAMES = 64
 # a second means the controller always has one to start. Ports whose
 # submit_xfer() takes only one at a time report EBUSY for the second, which
 # costs nothing but the attempt.
-IN_XFER_QUEUE = 2
+IN_XFER_QUEUE = const(2)
 
 
 class _FrameRing:
@@ -517,10 +529,19 @@ class GsUsbDataPlane:
 
     def xfer_cb(self, ep, result, xferred_bytes):
         """Bound to GsUsbUsbDevice's xfer_handler; dispatches on which
-        bulk endpoint completed."""
-        if ep == usb_device.EP_BULK_IN:
-            self._handle_in_done(result)
-        elif ep == usb_device.EP_BULK_OUT:
+        bulk endpoint completed.
+
+        The bulk IN case is written out here rather than delegated. It runs
+        once per delivered frame, and at that rate the call itself is a
+        measurable part of the frame's cost.
+        """
+        if ep == _EP_BULK_IN:
+            if result != _XFER_SUCCESS:
+                self._n_in_xfer_failed += 1
+            self._in_done += 1
+            self._in_flight -= 1
+            self._kick_in()
+        elif ep == _EP_BULK_OUT:
             self._handle_out_done(result, xferred_bytes)
 
     def _arm_out(self):
@@ -558,12 +579,16 @@ class GsUsbDataPlane:
         `_in_staged_buf` rather than being lost, since it is no longer in the
         ring to be found again, and the next call submits that same buffer.
         """
+        bufs = self._in_bufs
+        echo_readinto = self._echo_ring.readinto
+        rx_readinto = self._rx_ring.readinto
+        submit = self._usb.submit_xfer
         while self._in_flight < IN_XFER_QUEUE:
             buf = self._in_staged_buf
             if buf is None:
-                buf = self._in_bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
-                if not self._echo_ring.readinto(buf):
-                    if not self._rx_ring.readinto(buf):
+                buf = bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
+                if not echo_readinto(buf):
+                    if not rx_readinto(buf):
                         return
             # Count it out before submitting, and only put that back if the
             # submission does not happen: once it does, the completion may run
@@ -571,7 +596,7 @@ class GsUsbDataPlane:
             self._in_flight += 1
             self._in_staged_buf = None
             try:
-                armed = self._usb.submit_xfer(usb_device.EP_BULK_IN, buf)
+                armed = submit(_EP_BULK_IN, buf)
             except OSError:  # F19; see _arm_out's matching comment
                 self._in_flight -= 1
                 self._in_staged_buf = buf
@@ -581,13 +606,6 @@ class GsUsbDataPlane:
                 self._in_flight -= 1
                 self._in_staged_buf = buf
                 return
-
-    def _handle_in_done(self, result):
-        if result != _XFER_SUCCESS:
-            self._n_in_xfer_failed += 1
-        self._in_done += 1
-        self._in_flight -= 1
-        self._kick_in()
 
     def _handle_out_done(self, result, xferred_bytes):
         self._out_armed = False
@@ -772,7 +790,8 @@ class GsUsbDataPlane:
         # that are then dropped takes the processor away from the delivery path
         # that would empty the ring, which makes an overloaded receive path
         # deliver less than a merely busy one.
-        if not self._rx_ring.has_room():
+        rx_ring = self._rx_ring
+        if not rx_ring.has_room():
             self._rx_overflow_pending = True
             self._n_rx_dropped += 1
             return
@@ -782,10 +801,10 @@ class GsUsbDataPlane:
         overflow = bool(errors & _CAN_RECV_ERR_OVERRUN) or self._rx_overflow_pending
         eff = bool(flags & _CAN_MSG_FLAG_EXT_ID)
         rtr = bool(flags & _CAN_MSG_FLAG_RTR)
-        wire_flags = protocol.CAN_FLAG_OVERFLOW if overflow else 0
-        can_dlc = protocol.len_to_dlc(len(data))
+        wire_flags = _CAN_FLAG_OVERFLOW if overflow else 0
+        can_dlc = _len_to_dlc(len(data))
 
-        protocol.pack_classic_frame_into(
+        _pack_classic_frame_into(
             self._rx_scratch,
             0,
             protocol.ECHO_ID_RX,
@@ -797,7 +816,7 @@ class GsUsbDataPlane:
             eff=eff,
             rtr=rtr,
         )
-        if not self._rx_ring.write(self._rx_scratch):
+        if not rx_ring.write(self._rx_scratch):
             self._rx_overflow_pending = True
             self._n_rx_dropped += 1
             return

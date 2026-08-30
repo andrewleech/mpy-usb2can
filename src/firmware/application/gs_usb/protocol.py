@@ -13,6 +13,7 @@ supplied by the caller, which is exactly struct.pack_into's job. Format
 strings are module-level constants compiled once at import, so the hot path
 never rebuilds one.
 """
+import micropython
 import struct
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,27 @@ def _u32le(buf, offset: int) -> int:
     return buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16) | (buf[offset + 3] << 24)
 
 
+@micropython.viper
+def _pack_wire_id_fields(
+    buf: ptr8, offset: int, ident: int, top: int, can_dlc: int, channel: int, flags: int
+):
+    """Write the wire can_id, dlc, channel and flags bytes.
+
+    The cost of this part of a frame is the shifting and masking rather than
+    the stores, so it is compiled rather than interpreted. `ident` is at most
+    29 bits and `top` at most 8, both of which fit a machine word; echo_id
+    does not, and is written by the caller.
+    """
+    buf[offset + 4] = ident & 0xFF
+    buf[offset + 5] = (ident >> 8) & 0xFF
+    buf[offset + 6] = (ident >> 16) & 0xFF
+    buf[offset + 7] = ((ident >> 24) & 0x1F) | top
+    buf[offset + 8] = can_dlc
+    buf[offset + 9] = channel
+    buf[offset + 10] = flags
+    buf[offset + 11] = 0  # reserved
+
+
 def pack_classic_frame_into(
     buf,
     offset: int,
@@ -261,21 +283,14 @@ def pack_classic_frame_into(
         raise ValueError("classic CAN payload longer than 8 bytes")
 
     struct.pack_into(_ECHO_ID_FMT, buf, offset, echo_id)
-    buf[offset + 4] = ident & 0xFF
-    buf[offset + 5] = (ident >> 8) & 0xFF
-    buf[offset + 6] = (ident >> 16) & 0xFF
-    top = (ident >> 24) & 0x1F
+    top = 0
     if eff:
-        top |= 0x80
+        top = 0x80
     if rtr:
         top |= 0x40
     if err:
         top |= 0x20
-    buf[offset + 7] = top
-    buf[offset + 8] = can_dlc
-    buf[offset + 9] = channel
-    buf[offset + 10] = flags
-    buf[offset + 11] = 0  # reserved
+    _pack_wire_id_fields(buf, offset, ident, top, can_dlc, channel, flags)
 
     # Slice assignment rather than a byte loop: it is one memcpy in C against
     # eight interpreted iterations, and neither form allocates as long as the

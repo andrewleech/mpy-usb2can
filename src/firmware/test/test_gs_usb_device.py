@@ -568,7 +568,7 @@ class TestSpuriousInCompletion(unittest.TestCase):
         bring_up_channel(core)
         dev.start()
 
-        dev._handle_in_done(_XFER_SUCCESS)  # does not raise
+        dev.xfer_cb(usb_device.EP_BULK_IN, _XFER_SUCCESS, 0)  # does not raise
 
 
 class TestSubmitXferOSError(unittest.TestCase):
