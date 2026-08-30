@@ -14,6 +14,7 @@ branches = [
     { name = "feature/stm32-can-rx-ordering" },
     { name = "feature/usbd-xfer-queue" },
     { name = "feature/stm32-sched-wfe" },
+    { name = "feature/mimxrt-usbd-runtime" },
 ]
 
 [[submodules]]
