@@ -37,6 +37,17 @@ except AttributeError:
 
 
 # Extract the bootloader version from a known location in flash.
+#
+# mboot is part of the stm32 port and MBOOT_VERS_ADDR is an address in that
+# port's flash map, so the read below is only meaningful where `pyb` - the
+# module that port carries - exists. Elsewhere it would dereference an address
+# that belongs to something else entirely.
+try:
+    import pyb  # noqa: F401 - imported for its presence, not its contents
+
+    mboot = True
+except ImportError:
+    mboot = False
 
 MBOOT_VERS_ADDR: int = 0x08000280  # Matches address in $(BOARD)/mboot_footer.ld
 MBOOT_FOOTER_VERSION = 1
@@ -76,7 +87,7 @@ def _bootloader_version():
     return vers
 
 
-if unix:
+if unix or not mboot:
     bootloader_version = "N/A"
 else:
     bootloader_version = _bootloader_version()
