@@ -20,8 +20,10 @@ MICROPY_PY_SSL = 1
 MICROPY_SSL_MBEDTLS = 1
 
 # Firmware is deployed through the resident tinyuf2 bootloader over the OTG
-# port, which reserves the first 48kB of flash for itself.
-USE_UF2_BOOTLOADER = 1
+# port, which reserves the first 48kB of flash for itself. Build with
+# USE_UF2_BOOTLOADER=0 to place the image at the base of flash instead, for
+# programming over SWD with no bootloader present.
+USE_UF2_BOOTLOADER ?= 1
 
 # Include local project build settings.
 PROJ_PORT = mimxrt
