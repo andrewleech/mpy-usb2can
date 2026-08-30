@@ -1,0 +1,14 @@
+{
+    "deploy": [],
+    "docs": "",
+    "features": [
+        "CAN",
+        "USB"
+    ],
+    "images": [],
+    "mcu": "mimxrt",
+    "product": "USB2CAN (Seeed Arch Mix)",
+    "thumbnail": "",
+    "url": "https://github.com/andrewleech/mpy-usb2can",
+    "vendor": "alelec"
+}

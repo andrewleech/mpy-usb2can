@@ -154,7 +154,7 @@ endif
 system:  ## Build MicroPython including frozen firmware
 system: $(MPY_CROSS)
 ifeq ($(RUN_IN_DOCKER), 1)
-	$(DOCKER) make $@
+	$(DOCKER) make $@ BOARD=$(BOARD) PORT=$(PORT)
 else
 	@echo "-----------------------------------"
 	@echo "$(BOLD)Building MicroPython ...$(RESET)"
@@ -165,7 +165,7 @@ endif
 libs-only:  ## Build MicroPython with frozen libraries only (no application code)
 libs-only: $(MPY_CROSS)
 ifeq ($(RUN_IN_DOCKER), 1)
-	$(DOCKER) make $@
+	$(DOCKER) make $@ BOARD=$(BOARD) PORT=$(PORT)
 else
 	@echo "-----------------------------------"
 	@echo "$(BOLD)Building MicroPython with libraries only...$(RESET)"
@@ -179,7 +179,7 @@ bootloader: mboot
 mboot:  ## Build MicroPython bootloader
 mboot: submodules
 ifeq ($(RUN_IN_DOCKER), 1)
-	$(DOCKER) make $@
+	$(DOCKER) make $@ BOARD=$(BOARD) PORT=$(PORT)
 else
 	@echo "-----------------------------------"
 	@echo "$(BOLD)Building MicroPython mBoot ...$(RESET)"

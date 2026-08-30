@@ -7,6 +7,13 @@ FROZEN_MANIFEST = $(BOARD_DIR)/manifest.py
 $(BUILD)/genhdr/mpversion.h: PY_SRC = $(TOOLS)
 
 
+# The port this project's board targets. Everything below the mboot section
+# marker is stm32-only; a board on another port sets this and gets just the
+# portable settings above.
+PROJ_PORT ?= stm32
+
+ifeq ($(PROJ_PORT),stm32)
+
 # Compile the application with support / space for bootloader
 USE_MBOOT = 1
 
@@ -33,3 +40,4 @@ $(BUILD)/firmware.dfu: | fw_footer_section
 
 endif
 
+endif  # PROJ_PORT stm32
