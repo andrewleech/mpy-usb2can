@@ -312,6 +312,7 @@ class GsUsbDataPlane:
         self._echo_scratch = bytearray(protocol.FRAME_SIZE_CLASSIC)
         self._rx_scratch = bytearray(protocol.FRAME_SIZE_CLASSIC)
         self._rx_overflow_pending = False
+        self._sink_cache = None
 
         # Buffers bulk IN transfers are submitted from, one per transfer that
         # may be outstanding at once. Each is held for the length of its
@@ -451,6 +452,9 @@ class GsUsbDataPlane:
         self._echo_ring.reset()
         self._rx_ring.reset()
         self._rx_overflow_pending = False
+        # Resolved again on next use: a channel torn down and brought back up
+        # gets a new sink, and holding the old one would read a dead ring.
+        self._sink_cache = None
 
     def open_itf_cb(self, itf_desc=None):
         """
@@ -612,16 +616,36 @@ class GsUsbDataPlane:
         echo_readinto = self._echo_ring.readinto
         rx_readinto = self._rx_ring.readinto
         submit = self._usb.submit_xfer
+        sinks = self._sink_cache
+        if sinks is None:
+            sinks = self._resolve_sinks()
         while self._in_flight < IN_XFER_QUEUE:
             buf = self._in_staged_buf
             if buf is None:
                 buf = bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
                 if not echo_readinto(buf):
-                    # Interrupt-filled sink first, then the recv() path's ring
-                    # for drivers that have no sink.
-                    if not self._fill_from_sink(buf):
-                        if not rx_readinto(buf):
-                            return
+                    # The interrupt's sink, then the recv() path's ring for
+                    # drivers without one. Written out here rather than called:
+                    # this runs once per frame delivered, and a call of its own
+                    # costs more than the work it would hold.
+                    filled = False
+                    for readinto, rec, size, channel in sinks:
+                        if readinto(rec) == size:
+                            if rec[7]:
+                                self._rx_overflow_pending = True
+                                self._n_rx_dropped += 1
+                            _pack_rx_record_into(
+                                buf,
+                                0,
+                                rec,
+                                channel,
+                                _CAN_FLAG_OVERFLOW if self._rx_overflow_pending else 0,
+                            )
+                            self._rx_overflow_pending = False
+                            filled = True
+                            break
+                    if not filled and not rx_readinto(buf):
+                        return
             # Count it out before submitting, and only put that back if the
             # submission does not happen: once it does, the completion may run
             # before submit_xfer() returns and it undoes both of these.
@@ -826,32 +850,23 @@ class GsUsbDataPlane:
         """
         self._kick_in()
 
-    def _fill_from_sink(self, buf):
-        """Convert the oldest frame any channel's interrupt has stored into
-        `buf`, returning whether one was found.
+    def _resolve_sinks(self):
+        """Per-channel receive sinks, each entry everything the submit path
+        needs already looked up: the ring's bound readinto, the record buffer,
+        its length and the channel number.
 
-        The reserved byte of the record carries whether frames were lost before
-        it, which is what the host's overflow flag reports, so a loss inside the
-        interrupt is still signalled without a second channel to ask over.
+        Resolved on first use rather than at attach, because the sinks do not
+        exist until the host sets bit timing, and cached only once a channel
+        actually has one so an early call cannot pin an empty answer.
         """
+        sinks = []
         for channel in range(self._can.num_channels):
             ringio, rec = self._can.rx_sink(channel)
-            if ringio is None:
-                continue
-            if ringio.readinto(rec) == len(rec):
-                if rec[7]:
-                    self._rx_overflow_pending = True
-                    self._n_rx_dropped += 1
-                _pack_rx_record_into(
-                    buf,
-                    0,
-                    rec,
-                    channel,
-                    _CAN_FLAG_OVERFLOW if self._rx_overflow_pending else 0,
-                )
-                self._rx_overflow_pending = False
-                return True
-        return False
+            if ringio is not None:
+                sinks.append((ringio.readinto, rec, len(rec), channel))
+        if sinks:
+            self._sink_cache = sinks
+        return sinks
 
     def _can_accept_rx(self):
         """Whether a received frame can be delivered, and the record of it if
