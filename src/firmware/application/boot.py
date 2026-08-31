@@ -2,8 +2,20 @@
 import gc
 import sys
 
-# Reduce the heap fragmentation, this allows for more RAM utilization.
-gc.threshold(4000)  # type: ignore[attr-defined]
+# Collect once per 32 kB of allocation. The threshold is a trade between
+# fragmentation and throughput, and the throughput side is steep here: a
+# collection resets the allocator's free-block scan to the bottom of the heap,
+# so every later multi-block allocation re-walks the whole live prefix, and the
+# threshold sets how often that reset happens.
+#
+# Measured on a saturated 1 Mbit bus, frames delivered to the host:
+#   4000    3855/s      32768   8372-8495/s
+#   16384   7252/s      65536   7700-8473/s
+#   131072  7634/s      off     5803/s
+#
+# Wanted here rather than removed: with no threshold at all a collection only
+# happens once allocation fails, and that measures worse than any value tested.
+gc.threshold(32768)  # type: ignore[attr-defined]
 
 # Reorder the path to prioritize the file system.
 sys.path.clear()
