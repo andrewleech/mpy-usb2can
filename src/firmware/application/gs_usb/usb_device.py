@@ -544,7 +544,10 @@ class GsUsbUsbDevice:
             open_itf_cb=self.open_itf_cb,
             reset_cb=self.reset_cb,
             control_xfer_cb=self.control_xfer_cb,
-            xfer_cb=self.xfer_cb,
+            # The handler directly where there is one, rather than this
+            # object's forwarding method: a bulk completion runs once per
+            # frame delivered and a hop of its own is not free at that rate.
+            xfer_cb=self._xfer_handler if self._xfer_handler is not None else self.xfer_cb,
             desc_bos=self.desc_bos,
         )
         return usb_device

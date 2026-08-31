@@ -90,10 +90,20 @@ class GsUsbApp:
         Returns the asyncio task the data plane needs running; the caller
         adds it to whatever loop it owns.
         """
-        self.usb = self.usb_descriptors.apply(usb_device)
+        # The data plane is built before the descriptors are applied, so that
+        # its transfer callback can be registered directly rather than through
+        # this object. It needs the USBDevice only to submit on later, not a
+        # configured one, so the ordering the construction cycle used to force
+        # is not actually required.
+        if usb_device is None:
+            import machine
+
+            usb_device = machine.USBDevice()  # type: ignore[attr-defined]
         self.plane = device_mod.GsUsbDataPlane(
-            self.core, self.usb, echo_on_write=self._echo_on_write
+            self.core, usb_device, echo_on_write=self._echo_on_write
         )
+        self.usb_descriptors._xfer_handler = self.plane.xfer_cb
+        self.usb = self.usb_descriptors.apply(usb_device)
         # A channel stopped by MODE RESET will never report another transmit
         # completion, so the data plane has to resolve what it is holding for
         # that channel rather than wait for one.
