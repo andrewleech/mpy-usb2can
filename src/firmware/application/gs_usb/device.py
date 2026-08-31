@@ -617,8 +617,11 @@ class GsUsbDataPlane:
             if buf is None:
                 buf = bufs[(self._in_done + self._in_flight) % IN_XFER_QUEUE]
                 if not echo_readinto(buf):
-                    if not rx_readinto(buf):
-                        return
+                    # Interrupt-filled sink first, then the recv() path's ring
+                    # for drivers that have no sink.
+                    if not self._fill_from_sink(buf):
+                        if not rx_readinto(buf):
+                            return
             # Count it out before submitting, and only put that back if the
             # submission does not happen: once it does, the completion may run
             # before submit_xfer() returns and it undoes both of these.
@@ -814,45 +817,41 @@ class GsUsbDataPlane:
     # -- receive ----------------------------------------------------------------
 
     def _on_rx_ready(self, channel):
-        """Take everything the receive interrupt has stored for this channel.
+        """The receive interrupt has frames stored for this channel.
 
-        The frames are already bytes in a ring, so this is the whole per-frame
-        cost of receiving: a copy out, one compiled conversion into the wire
-        frame, and a copy into the delivery ring. Nothing is called per frame
-        to fetch a frame, and the endpoint is fed once for the whole batch
-        rather than once per frame.
+        Nothing is moved here. The frames stay in the interrupt's ring until
+        the endpoint has somewhere to put one, and are converted straight into
+        the transfer buffer at that point, so a frame is only ever formatted if
+        it is about to be sent and is never copied through a second ring.
         """
-        # Looked up per pass, not cached at attach: the sink does not exist
-        # until the channel is configured, which happens later, when the host
-        # sets bit timing.
-        ringio, rec = self._can.rx_sink(channel)
-        if ringio is None:
-            return
-        readinto = ringio.readinto
-        size = len(rec)
-        ring = self._rx_ring
-        scratch = self._rx_scratch
-        pack = _pack_rx_record_into
-        while readinto(rec) == size:
-            if not ring.has_room():
-                # Same discipline as the recv() path: refuse before formatting,
-                # and let the flag ride out on the next frame that gets through.
-                self._rx_overflow_pending = True
-                self._n_rx_dropped += 1
-                continue
-            pack(
-                scratch,
-                0,
-                rec,
-                channel,
-                _CAN_FLAG_OVERFLOW if self._rx_overflow_pending else 0,
-            )
-            if ring.write(scratch):
-                self._rx_overflow_pending = False
-            else:
-                self._rx_overflow_pending = True
-                self._n_rx_dropped += 1
         self._kick_in()
+
+    def _fill_from_sink(self, buf):
+        """Convert the oldest frame any channel's interrupt has stored into
+        `buf`, returning whether one was found.
+
+        The reserved byte of the record carries whether frames were lost before
+        it, which is what the host's overflow flag reports, so a loss inside the
+        interrupt is still signalled without a second channel to ask over.
+        """
+        for channel in range(self._can.num_channels):
+            ringio, rec = self._can.rx_sink(channel)
+            if ringio is None:
+                continue
+            if ringio.readinto(rec) == len(rec):
+                if rec[7]:
+                    self._rx_overflow_pending = True
+                    self._n_rx_dropped += 1
+                _pack_rx_record_into(
+                    buf,
+                    0,
+                    rec,
+                    channel,
+                    _CAN_FLAG_OVERFLOW if self._rx_overflow_pending else 0,
+                )
+                self._rx_overflow_pending = False
+                return True
+        return False
 
     def _can_accept_rx(self):
         """Whether a received frame can be delivered, and the record of it if
