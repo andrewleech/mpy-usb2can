@@ -84,7 +84,22 @@ class CanCore:
     # tolerance, so a real bus delivering frames back to back overruns it
     # before an interrupt-driven drain can keep up. machine.CAN's software
     # ring absorbs that; 64 frames is roughly 7ms at the highest classic rate.
-    RX_RING_FRAMES = 64
+    # Frames the receive interrupt can hold before it starts discarding.
+    #
+    # Depth is a trade: it absorbs bursts, and it costs sustained throughput,
+    # because a larger live heap lengthens the allocator's free-block scan after
+    # every collection. Measured at 1 Mbit against a node saturating the bus,
+    # delivered frames/s and frames kept from a burst arriving at line rate:
+    #
+    #    64   8503/s, 0.7% lost   burst of 2000 -> 1960 kept
+    #   128   8366/s, 2.3%        burst of 2000 -> 2000
+    #   256   7900/s, 7.7%        burst of 2000 -> 1999
+    #   512   7300/s, 14.8%       burst of 2000 -> 2000
+    #
+    # 128 absorbs a full 2000 frame burst for about 1.6% of saturated
+    # throughput. Bursts need much less depth than they used to because
+    # delivery now runs close to line rate, so a burst barely accumulates.
+    RX_RING_FRAMES = 128
 
     def __init__(self, num_channels=2, can_class=None):
         self._can_class = can_class
