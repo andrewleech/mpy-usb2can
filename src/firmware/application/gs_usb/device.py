@@ -161,6 +161,7 @@ _EP_BULK_OUT = usb_device.EP_BULK_OUT
 
 # Bound for the same reason: the receive path reaches these once per frame.
 _pack_classic_frame_into = protocol.pack_classic_frame_into
+_pack_rx_record_into = protocol.pack_rx_record_into
 _len_to_dlc = protocol.len_to_dlc
 _CAN_FLAG_OVERFLOW = protocol.CAN_FLAG_OVERFLOW
 
@@ -380,6 +381,7 @@ class GsUsbDataPlane:
                 on_rx=self._on_rx,
                 on_tx_complete=self._on_tx_complete,
                 can_accept=self._can_accept_rx,
+                on_rx_ready=self._on_rx_ready,
             )
         self._arm_out()
         self.run.set()
@@ -500,10 +502,25 @@ class GsUsbDataPlane:
             # anything is queued so that retry costs a millisecond rather
             # than a second, and fall back to the idle interval once the
             # queue drains.
-            if not (self._echo_ring.pending() or self._rx_ring.pending() or self._tx_pending):
+            if not (
+                self._echo_ring.pending()
+                or self._rx_ring.pending()
+                or self._tx_pending
+                or self._rx_sink_pending()
+            ):
                 await asyncio.sleep_ms(_IDLE_POLL_MS)
             else:
                 await asyncio.sleep_ms(_BUSY_POLL_MS)
+
+    def _rx_sink_pending(self):
+        """Whether any channel's receive interrupt has frames stored that this
+        object has not taken yet. Part of the busy test, so a full sink keeps
+        the fast poll interval rather than dropping to the idle one."""
+        for channel in range(self._can.num_channels):
+            ringio, _rec = self._can.rx_sink(channel)
+            if ringio is not None and ringio.any():
+                return True
+        return False
 
     def _poll(self, _arg=None):
         """One pass of task()'s liveness work.
@@ -525,6 +542,13 @@ class GsUsbDataPlane:
         Takes the unused argument micropython.schedule passes, and is
         callable directly from a test with no event loop.
         """
+        # Take whatever the receive interrupt has stored. The channel's own
+        # notification fires on the sink going from empty to non-empty, which
+        # stops happening once traffic keeps it permanently non-empty, so this
+        # is what guarantees a full sink still drains.
+        for channel in range(self._can.num_channels):
+            self._on_rx_ready(channel)
+
         if self._tx_pending:
             self._retry_pending_tx()
         self._arm_out()
@@ -788,6 +812,47 @@ class GsUsbDataPlane:
         self._kick_in()
 
     # -- receive ----------------------------------------------------------------
+
+    def _on_rx_ready(self, channel):
+        """Take everything the receive interrupt has stored for this channel.
+
+        The frames are already bytes in a ring, so this is the whole per-frame
+        cost of receiving: a copy out, one compiled conversion into the wire
+        frame, and a copy into the delivery ring. Nothing is called per frame
+        to fetch a frame, and the endpoint is fed once for the whole batch
+        rather than once per frame.
+        """
+        # Looked up per pass, not cached at attach: the sink does not exist
+        # until the channel is configured, which happens later, when the host
+        # sets bit timing.
+        ringio, rec = self._can.rx_sink(channel)
+        if ringio is None:
+            return
+        readinto = ringio.readinto
+        size = len(rec)
+        ring = self._rx_ring
+        scratch = self._rx_scratch
+        pack = _pack_rx_record_into
+        while readinto(rec) == size:
+            if not ring.has_room():
+                # Same discipline as the recv() path: refuse before formatting,
+                # and let the flag ride out on the next frame that gets through.
+                self._rx_overflow_pending = True
+                self._n_rx_dropped += 1
+                continue
+            pack(
+                scratch,
+                0,
+                rec,
+                channel,
+                _CAN_FLAG_OVERFLOW if self._rx_overflow_pending else 0,
+            )
+            if ring.write(scratch):
+                self._rx_overflow_pending = False
+            else:
+                self._rx_overflow_pending = True
+                self._n_rx_dropped += 1
+        self._kick_in()
 
     def _can_accept_rx(self):
         """Whether a received frame can be delivered, and the record of it if

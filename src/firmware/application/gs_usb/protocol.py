@@ -215,6 +215,50 @@ def _u32le(buf, offset: int) -> int:
 
 
 @micropython.viper
+def pack_rx_record_into(dst: ptr8, doff: int, rec: ptr8, channel: int, wire_flags: int):
+    """Convert one `machine.CAN` receive record into a classic gs_host_frame.
+
+    The record is the fixed layout the receive interrupt writes into a RingIO
+    (`CAN.RX_RECORD_SIZE`): identifier, flags, length, then payload. Compiled
+    rather than interpreted because this is the whole per-frame cost of the
+    receive path once the frames arrive as bytes.
+
+    Writes FRAME_SIZE_CLASSIC bytes at `doff`. The echo id is the receive
+    marker, all ones, written a byte at a time so no value here leaves the
+    machine-word range.
+    """
+    dst[doff] = 0xFF
+    dst[doff + 1] = 0xFF
+    dst[doff + 2] = 0xFF
+    dst[doff + 3] = 0xFF
+
+    dst[doff + 4] = rec[0]
+    dst[doff + 5] = rec[1]
+    dst[doff + 6] = rec[2]
+    top = rec[3] & 0x1F
+    f = rec[4]
+    if f & 2:
+        top |= 0x80
+    if f & 1:
+        top |= 0x40
+    dst[doff + 7] = top
+
+    n = rec[6]
+    dst[doff + 8] = n  # classic: dlc equals length for 0..8
+    dst[doff + 9] = channel
+    dst[doff + 10] = wire_flags
+    dst[doff + 11] = 0
+
+    i = 0
+    while i < n:
+        dst[doff + 12 + i] = rec[8 + i]
+        i += 1
+    while i < 8:
+        dst[doff + 12 + i] = 0
+        i += 1
+
+
+@micropython.viper
 def _pack_wire_id_fields(
     buf: ptr8, offset: int, ident: int, top: int, can_dlc: int, channel: int, flags: int
 ):

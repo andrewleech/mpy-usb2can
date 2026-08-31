@@ -34,6 +34,8 @@ notifying the consumer of the transition.
 
 import logging
 
+import micropython
+
 log = logging.getLogger("can_core")
 
 # MP_CAN_MAX_LEN with MICROPY_HW_ENABLE_FDCAN (extmod/machine_can_port.h):
@@ -54,6 +56,9 @@ class _Channel:
         self.on_rx = None
         self.can_accept = None
         self.rx_discarded = 0
+        self.on_rx_ready = None
+        self.rx_ringio = None
+        self.rx_record = None
         self.on_tx_complete = None
         self.on_state_change = None
         # [id, memoryview(data), flags, errors]; can.recv() overwrites every
@@ -122,6 +127,7 @@ class CanCore:
         on_tx_complete=None,
         on_state_change=None,
         can_accept=None,
+        on_rx_ready=None,
     ):
         """Register the one consumer for a channel. Raises RuntimeError if
         the channel already has a consumer attached.
@@ -138,6 +144,7 @@ class CanCore:
             raise RuntimeError("channel %d already has a consumer attached" % channel_index)
         ch.on_rx = on_rx
         ch.can_accept = can_accept
+        ch.on_rx_ready = on_rx_ready
         ch.on_tx_complete = on_tx_complete
         ch.on_state_change = on_state_change
         ch.attached = True
@@ -147,9 +154,17 @@ class CanCore:
         ch = self._channel(channel_index)
         ch.on_rx = None
         ch.can_accept = None
+        ch.on_rx_ready = None
         ch.on_tx_complete = None
         ch.on_state_change = None
         ch.attached = False
+
+    def rx_sink(self, channel_index):
+        """The RingIO this channel's receive interrupt fills, and a scratch
+        buffer one record long, or `(None, None)` where the driver has no such
+        sink and frames come back through `recv()` instead."""
+        ch = self._channel(channel_index)
+        return ch.rx_ringio, ch.rx_record
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -183,16 +198,34 @@ class CanCore:
             "tseg1": tseg1,
             "tseg2": tseg2,
         }
+        # Preferred: the receive interrupt writes frames straight into a RingIO,
+        # so nothing is called per frame to collect them. Falls back to the
+        # port's own ring, and then to neither, on drivers without them.
+        record_size = getattr(can_class, "RX_RECORD_SIZE", 0)
+        if ch.rx_ringio is None and record_size:
+            ch.rx_ringio = micropython.RingIO(self.RX_RING_FRAMES * record_size + 1)
+            ch.rx_record = bytearray(record_size)
+
         if ch.can is None:
             try:
-                ch.can = can_class(channel_index + 1, rxbuf=self.RX_RING_FRAMES, **kwargs)
+                ch.can = can_class(channel_index + 1, rxring=ch.rx_ringio, **kwargs)
             except TypeError:
-                ch.can = can_class(channel_index + 1, **kwargs)
+                ch.rx_ringio = None
+                ch.rx_record = None
+                try:
+                    ch.can = can_class(channel_index + 1, rxbuf=self.RX_RING_FRAMES, **kwargs)
+                except TypeError:
+                    ch.can = can_class(channel_index + 1, **kwargs)
         else:
             try:
-                ch.can.init(rxbuf=self.RX_RING_FRAMES, **kwargs)
+                ch.can.init(rxring=ch.rx_ringio, **kwargs)
             except TypeError:
-                ch.can.init(**kwargs)
+                ch.rx_ringio = None
+                ch.rx_record = None
+                try:
+                    ch.can.init(rxbuf=self.RX_RING_FRAMES, **kwargs)
+                except TypeError:
+                    ch.can.init(**kwargs)
         # Promiscuous by default (R14): the power-on state accepts nothing
         # until set_filters() is called at least once (F27), so this call is
         # what makes the channel a promiscuous frame source rather than a
@@ -330,6 +363,14 @@ class CanCore:
             ch.on_tx_complete(ch.index, slot, success)
 
     def _drain_rx(self, ch):
+        # With a RingIO sink the interrupt has already stored the frames, so
+        # this only tells the consumer there is something to take. The consumer
+        # reads the records itself, which is the point: no call per frame.
+        if ch.rx_ringio is not None:
+            if ch.on_rx_ready is not None:
+                ch.on_rx_ready(ch.index)
+            return
+
         # Everything the loop needs is resolved once. This runs per received
         # frame, where repeatedly walking ch to reach the controller, the
         # consumer and the channel index is a measurable share of the cost.
