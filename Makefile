@@ -173,6 +173,27 @@ else
 	make -C src/system $(FW_OPTIONS) EXCLUDE_APP=1
 endif
 
+# Generate a compilation database (compile_commands.json) from the real firmware
+# build. This is the SAST scope authority for what is actually compiled, consumed
+# by cppcheck, GitLab Advanced SAST and Coverity. The database is written into
+# each port's build directory (src/system/build-<BOARD>/ and the unix port's
+# build dir), so the build tree's existing .gitignore covers it. The capture
+# tooling is part of the SAST programme and lives outside this repository, since
+# it spans every target; this target delegates to it. Point SAST_HARNESS at the
+# harness directory, or run from within the SAST planning tree where it is found
+# automatically at ../../tools/sast.
+SAST_HARNESS ?= $(wildcard $(PROJECT_BASE)/../../tools/sast)
+.PHONY: compile-commands
+compile-commands:  ## Generate compile_commands.json for SAST (needs the SAST harness)
+compile-commands:
+	@if [ -z "$(SAST_HARNESS)" ] || [ ! -x "$(SAST_HARNESS)/compile-db.sh" ]; then \
+		echo "$(BOLD)compile-commands needs the SAST harness.$(RESET)"; \
+		echo "Set SAST_HARNESS=/path/to/tools/sast, or run inside the SAST planning tree."; \
+		exit 1; \
+	fi
+	@echo "$(BOLD)Generating compilation database via the SAST harness...$(RESET)"
+	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/compile-db.sh $(CDBARGS)
+
 
 .PHONY: mboot bootloader
 bootloader: mboot

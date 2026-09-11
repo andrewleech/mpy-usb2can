@@ -1,0 +1,138 @@
+# GitLab CI for the SAST trial (SAST-01).
+#
+# Produces the compilation database GitLab Advanced SAST (C/C++) consumes via
+# SAST_COMPILATION_DATABASE with GITLAB_ADVANCED_SAST_CPP_ENABLED=true. GitLab is
+# the first-class delivery target for the degraves projects, so the database is a
+# published, consumable artefact here, not GitHub-only glue.
+#
+# This file lives on the repository's `sast` branch as the chartered SAST
+# footprint; the generation technique itself is the SAST programme's, driven from
+# outside in local use and reproduced inline here so the CI job is
+# self-contained. It needs no binary beyond the python3 already in the toolchain
+# image: the database is produced by parsing a verbose serial build, not by
+# compiler interposition.
+
+stages:
+  - compile-db
+
+compile-commands:
+  stage: compile-db
+  image: micropython/build-micropython-arm
+  variables:
+    GIT_SUBMODULE_STRATEGY: none  # the Makefile fetches the right subset itself
+  before_script:
+    - git config --global --add safe.directory '*'
+    - make submodules
+  script:
+    # CI runs in-container, so RUN_IN_DOCKER=0 and make builds natively. Build
+    # mpy-cross first so its host-gcc py/ units stay out of the cross-compiled
+    # database, then build each port verbosely and serially (V=1 -j1) so the
+    # compiler commands are printed in full and do not interleave, and parse them
+    # into a compilation database written into the port's build dir. This mirrors
+    # tools/sast/gen_compile_commands.py, inlined so the job is self-contained.
+    - make mpy-cross
+    - |
+      set -e
+      cat > /tmp/gen_cc.py <<'PY'
+      import json, os, re, shlex, sys
+      out = sys.argv[1]
+      COMP = re.compile(r"(^|-)(gcc|g\+\+|clang|clang\+\+|cc|c\+\+)$")
+      SRC = re.compile(r"\.(c|cc|cpp|cxx|c\+\+|C)$")
+      EN = re.compile(r"^make(?:\[\d+\])?: Entering directory ['\"](.+)['\"]")
+      LV = re.compile(r"^make(?:\[\d+\])?: Leaving directory ['\"](.+)['\"]")
+      root = os.getcwd(); stack = [root]; entries = []; seen = {}
+      for line in sys.stdin:
+          line = line.rstrip("\n")
+          m = EN.match(line)
+          if m: stack.append(m.group(1)); continue
+          m = LV.match(line)
+          if m:
+              if len(stack) > 1: stack.pop()
+              continue
+          try: toks = shlex.split(line)
+          except ValueError: continue
+          if not toks or not COMP.search(os.path.basename(toks[0])): continue
+          if "-c" not in toks: continue
+          src = next((t for t in toks if not t.startswith("-") and SRC.search(t)), None)
+          if not src: continue
+          d = stack[-1]
+          obj = next((toks[i + 1] for i, t in enumerate(toks) if t == "-o" and i + 1 < len(toks)), None)
+          key = ("o", obj) if obj else ("s", d, src)  # dedup on the output object
+          e = {"directory": d, "file": src, "arguments": toks}
+          if key in seen: entries[seen[key]] = e
+          else: seen[key] = len(entries); entries.append(e)
+      if not entries:
+          sys.stderr.write("gen: no compile commands (build up to date or not verbose)\n"); sys.exit(1)
+      json.dump(entries, open(out, "w"), indent=2)
+      sys.stderr.write("gen: wrote %d entries to %s\n" % (len(entries), out))
+      PY
+      # Run the build|parse pipelines under bash with pipefail so a make failure
+      # mid-pipe fails the job rather than yielding a partial database.
+      bash -o pipefail -c 'make V=1 -w -j1 system 2>&1 | python3 /tmp/gen_cc.py src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json'
+      rm -rf src/micropython/ports/unix/build-* src/unix/build
+      make mpy-cross
+      bash -o pipefail -c 'make V=1 -w -j1 unix-port unix-frozen-code 2>&1 | python3 /tmp/gen_cc.py src/micropython/ports/unix/build-standard/compile_commands.json'
+    # Completeness gate: every C object built must have an entry; assembly is the
+    # only permitted absence. Mirrors tools/sast/check-compile-db.py, fail-closed.
+    - |
+      python3 - <<'PY'
+      import glob, json, os, sys
+      C=(".c",".cc",".cpp",".cxx",".c++"); ASM=(".s",".S",".asm")
+      def outs(db):
+          s=set()
+          for e in json.load(open(db)):
+              a=e.get("arguments") or e["command"].split()
+              o=e.get("output")
+              if o is None:
+                  for i,x in enumerate(a):
+                      if x=="-o": o=a[i+1]; break
+              if o:
+                  s.add(os.path.normpath(o if os.path.isabs(o) else os.path.join(e["directory"],o)))
+          return s
+      def under(path, roots):
+          ap=os.path.abspath(path)
+          return any(ap.startswith(os.path.abspath(r)+os.sep) for r in roots)
+      def found(stem, roots, sufs):
+          for r in roots:
+              for s in sufs:
+                  if os.path.exists(os.path.join(r,stem+s)): return True
+          for s in sufs:
+              c=os.path.join("/",stem+s)
+              if under(c,roots) and os.path.exists(c): return True
+          return False
+      def check(db, build, roots):
+          have=outs(db); roots=[build]+roots; missing=[]
+          objs=[os.path.abspath(o) for o in glob.glob(build+"/**/*.o", recursive=True)]
+          if not objs:
+              print(f"{db}: no object files under {build} - build did not run or path wrong")
+              sys.exit(2)
+          for obj in objs:
+              if obj in have: continue
+              stem=os.path.relpath(obj, build)[:-2]
+              if found(stem, roots, C) or not found(stem, roots, ASM):
+                  missing.append(obj)
+          print(f"{db}: {len(objs)} objects, {len(have)} entries, {len(missing)} missing C TUs")
+          return missing
+      m1=check("src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json",
+               "src/system/build-USB2CAN_NUCLEO_H563ZI",
+               [os.path.abspath("src/micropython"),os.path.abspath("src/system"),
+                os.path.abspath("src/micropython/ports/stm32")])
+      m2=check("src/micropython/ports/unix/build-standard/compile_commands.json",
+               "src/micropython/ports/unix/build-standard",
+               [os.path.abspath("src/micropython")])
+      if m1 or m2:
+          for o in m1+m2: print("MISSING", o)
+          sys.exit(1)
+      print("COMPLETE")
+      PY
+  artifacts:
+    paths:
+      - src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
+      - src/micropython/ports/unix/build-standard/compile_commands.json
+    expire_in: 1 week
+
+# When GitLab Advanced SAST is enabled for C/C++, it reads the database above:
+#   variables:
+#     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
+#     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
+# Wiring that scan is SAST-04's ticket; this job establishes the precondition.

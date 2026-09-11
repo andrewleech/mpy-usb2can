@@ -74,6 +74,134 @@ jobs:
             src/system/build-USB2CAN_NUCLEO_H563ZI/version.txt
           if-no-files-found: error
 
+  compile-commands:
+    name: Compilation database
+    runs-on: ubuntu-latest
+    container: micropython/build-micropython-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@v5
+      - name: Fetch submodules
+        run: make submodules
+      - name: Generate compilation databases
+        # CI runs in-container, so RUN_IN_DOCKER=0 and make builds natively.
+        # Build mpy-cross first so its host-gcc py/ units stay out of the
+        # cross-compiled database, then build each port verbosely and serially
+        # (V=1 -j1) so the compiler commands are printed in full and do not
+        # interleave, and parse them into a compilation database written into the
+        # port's own build dir. The parser is written to a file first (a heredoc
+        # cannot be the parser's stdin while a pipe also feeds it), mirroring
+        # tools/sast/gen_compile_commands.py so the job needs nothing outside this
+        # repository. No compiler interposition and no extra binary dependency.
+        run: |
+          set -eo pipefail
+          cat > /tmp/gen_cc.py <<'PY'
+          import json, os, re, shlex, sys
+          out = sys.argv[1]
+          COMP = re.compile(r"(^|-)(gcc|g\+\+|clang|clang\+\+|cc|c\+\+)$")
+          SRC = re.compile(r"\.(c|cc|cpp|cxx|c\+\+|C)$")
+          EN = re.compile(r"^make(?:\[\d+\])?: Entering directory ['\"](.+)['\"]")
+          LV = re.compile(r"^make(?:\[\d+\])?: Leaving directory ['\"](.+)['\"]")
+          root = os.getcwd(); stack = [root]; entries = []; seen = {}
+          for line in sys.stdin:
+              line = line.rstrip("\n")
+              m = EN.match(line)
+              if m: stack.append(m.group(1)); continue
+              m = LV.match(line)
+              if m:
+                  if len(stack) > 1: stack.pop()
+                  continue
+              try: toks = shlex.split(line)
+              except ValueError: continue
+              if not toks or not COMP.search(os.path.basename(toks[0])): continue
+              if "-c" not in toks: continue
+              src = next((t for t in toks if not t.startswith("-") and SRC.search(t)), None)
+              if not src: continue
+              d = stack[-1]
+              obj = next((toks[i + 1] for i, t in enumerate(toks) if t == "-o" and i + 1 < len(toks)), None)
+              key = ("o", obj) if obj else ("s", d, src)  # dedup on the output object
+              e = {"directory": d, "file": src, "arguments": toks}
+              if key in seen: entries[seen[key]] = e
+              else: seen[key] = len(entries); entries.append(e)
+          if not entries:
+              sys.stderr.write("gen: no compile commands (build up to date or not verbose)\n"); sys.exit(1)
+          json.dump(entries, open(out, "w"), indent=2)
+          sys.stderr.write("gen: wrote %d entries to %s\n" % (len(entries), out))
+          PY
+          make mpy-cross
+          make V=1 -w -j1 system 2>&1 | python3 /tmp/gen_cc.py src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
+          rm -rf src/micropython/ports/unix/build-* src/unix/build
+          make mpy-cross
+          make V=1 -w -j1 unix-port unix-frozen-code 2>&1 | python3 /tmp/gen_cc.py src/micropython/ports/unix/build-standard/compile_commands.json
+      - name: Check completeness
+        # Every C object the build produced must have a database entry; assembly
+        # objects are the only permitted absences. Mirrors the programme's oracle
+        # (tools/sast/check-compile-db.py) fail-closed: an empty object set fails
+        # (a wrong path or empty build must not pass), an unmatched object whose
+        # source is neither C nor assembly fails, and the suffix sets match.
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+          C=(".c",".cc",".cpp",".cxx",".c++"); ASM=(".s",".S",".asm")
+          def outs(db):
+              s=set()
+              for e in json.load(open(db)):
+                  a=e.get("arguments") or e["command"].split()
+                  o=e.get("output")
+                  if o is None:
+                      for i,x in enumerate(a):
+                          if x=="-o": o=a[i+1]; break
+                  if o:
+                      s.add(os.path.normpath(o if os.path.isabs(o) else os.path.join(e["directory"],o)))
+              return s
+          def under(path, roots):
+              ap=os.path.abspath(path)
+              return any(ap.startswith(os.path.abspath(r)+os.sep) for r in roots)
+          def found(stem, roots, sufs):
+              for r in roots:
+                  for s in sufs:
+                      if os.path.exists(os.path.join(r,stem+s)): return True
+              for s in sufs:  # absolute-path mirror, constrained to roots (hermetic)
+                  c=os.path.join("/",stem+s)
+                  if under(c,roots) and os.path.exists(c): return True
+              return False
+          def check(db, build, roots):
+              have=outs(db); roots=[build]+roots; missing=[]
+              objs=[os.path.abspath(o) for o in glob.glob(build+"/**/*.o", recursive=True)]
+              if not objs:
+                  print(f"{db}: no object files under {build} - build did not run or path wrong")
+                  sys.exit(2)
+              for obj in objs:
+                  if obj in have: continue
+                  stem=os.path.relpath(obj, build)[:-2]
+                  if found(stem, roots, C) or not found(stem, roots, ASM):
+                      missing.append(obj)  # C, or unclassifiable -> failure
+              print(f"{db}: {len(objs)} objects, {len(have)} entries, {len(missing)} missing C TUs")
+              return missing
+          m1=check("src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json",
+                   "src/system/build-USB2CAN_NUCLEO_H563ZI",
+                   [os.path.abspath("src/micropython"),os.path.abspath("src/system"),
+                    os.path.abspath("src/micropython/ports/stm32")])
+          m2=check("src/micropython/ports/unix/build-standard/compile_commands.json",
+                   "src/micropython/ports/unix/build-standard",
+                   [os.path.abspath("src/micropython")])
+          if m1 or m2:
+              for o in m1+m2: print("MISSING", o)
+              sys.exit(1)
+          print("COMPLETE")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands
+          path: |
+            src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
+            src/micropython/ports/unix/build-standard/compile_commands.json
+          if-no-files-found: error
+
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
