@@ -6,17 +6,39 @@
 [[submodules]]
 path = "src/micropython"
 integration_branch = "usb2can-integration"
-branches = [
-    { name = "feature/usbd-runtime-vendor-control" },
-    { name = "feature/stm32-h5-fdcan" },
-    { name = "feature/usbd-bos-descriptor" },
-    { name = "feature/stm32-can-rxbuf" },
-    { name = "feature/stm32-can-rx-ordering" },
-    { name = "feature/usbd-xfer-queue" },
-    { name = "feature/stm32-sched-wfe" },
-    { name = "feature/stm32-can-rxring" },
-    { name = "feature/mimxrt-usbd-runtime" },
-]
+
+[[submodules.branches]]
+name = "feature/usbd-runtime-vendor-control"
+
+[[submodules.branches]]
+name = "feature/stm32-h5-fdcan"
+
+[[submodules.branches]]
+name = "feature/usbd-bos-descriptor"
+
+[[submodules.branches]]
+name = "feature/stm32-can-rxbuf"
+
+[[submodules.branches]]
+name = "feature/stm32-can-rx-ordering"
+
+[[submodules.branches]]
+name = "feature/usbd-xfer-queue"
+
+[[submodules.branches]]
+name = "feature/stm32-sched-wfe"
+
+[[submodules.branches]]
+name = "feature/stm32-can-rxring"
+
+[[submodules.branches]]
+name = "feature/mimxrt-usbd-runtime"
+
+[[submodules.branches]]
+name = "feature/sast-compile-commands"
+pr_url = "https://github.com/micropython/micropython/pull/19698"
+pr_number = 19698
+title = "tools: Add compilation database helpers"
 
 [[submodules]]
 path = "src/libs/micropython-lib"

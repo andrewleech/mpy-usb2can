@@ -1,223 +1,30 @@
-# GitLab CI for the SAST trial (SAST-01).
-#
-# Produces the compilation database GitLab Advanced SAST (C/C++) consumes via
-# SAST_COMPILATION_DATABASE with GITLAB_ADVANCED_SAST_CPP_ENABLED=true. GitLab is
-# the first-class delivery target for the degraves projects, so the database is a
-# published, consumable artefact here, not GitHub-only glue.
-#
-# This file lives on the repository's `sast` branch as the chartered SAST
-# footprint; the generation technique itself is the SAST programme's, driven from
-# outside in local use and reproduced inline here so the CI job is
-# self-contained. It needs no binary beyond the python3 already in the toolchain
-# image: the database is produced by parsing a verbose serial build, not by
-# compiler interposition.
+# Compilation-database artefact for SAST-01.
+# Generic generation and completeness checking are pinned with MicroPython;
+# this job runs the same target-owned recipe developers run locally.
 
 stages:
   - compile-db
 
 compile-commands:
   stage: compile-db
-  image: micropython/build-micropython-arm
+  image: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
   variables:
-    GIT_SUBMODULE_STRATEGY: none  # the Makefile fetches the right subset itself
+    GIT_SUBMODULE_STRATEGY: none
   before_script:
     - git config --global --add safe.directory '*'
     - make submodules
   script:
-    # CI runs in-container, so RUN_IN_DOCKER=0 and make builds natively. Build
-    # mpy-cross first so its host-gcc py/ units stay out of the cross-compiled
-    # database, then build each port verbosely and serially (V=1 -w -j1) so the
-    # compiler commands are printed in full, do not interleave, and Entering/
-    # Leaving directory lines print even under an inherited MAKEFLAGS=-s. This
-    # mirrors tools/sast/gen_compile_commands.py, inlined so the job is
-    # self-contained.
-    - make mpy-cross
-    - |
-      set -e
-      cat > /tmp/gen_cc.py <<'PY'
-      import json, os, re, shlex, sys
-      out = sys.argv[1]
-      COMP = re.compile(r"(^|-)(gcc|g\+\+|clang|clang\+\+|cc|c\+\+)$")
-      SRC = re.compile(r"\.(c|cc|cpp|cxx|c\+\+|C)$")
-      EN = re.compile(r"^make(?:\[\d+\])?: Entering directory ['\"](.+)['\"]")
-      LV = re.compile(r"^make(?:\[\d+\])?: Leaving directory ['\"](.+)['\"]")
-      VALUE_FLAGS = {"-o", "-include", "-MF", "-MT", "-MQ", "-I", "-isystem",
-                     "-iquote", "-idirafter", "-D", "-U", "-x"}
-      root = os.getcwd(); stack = [root]; entries = []; seen = {}
-      for line in sys.stdin:
-          line = line.rstrip("\n")
-          m = EN.match(line)
-          if m: stack.append(m.group(1)); continue
-          m = LV.match(line)
-          if m:
-              if len(stack) > 1: stack.pop()
-              continue
-          try: toks = shlex.split(line)
-          except ValueError:
-              sys.stderr.write("gen: skipping unparseable line: %r\n" % line)
-              continue
-          if not toks or not COMP.search(os.path.basename(toks[0])): continue
-          if "-c" not in toks: continue
-          # Last positional (non-flag-value) C-suffixed token is the real
-          # compiled source; a flag's own value (-include foo.h) is never
-          # mistaken for it even if it happens to carry a C suffix.
-          cands = []; skip = False
-          for t in toks:
-              if skip: skip = False; continue
-              if t in VALUE_FLAGS: skip = True; continue
-              if t.startswith("-"): continue
-              if SRC.search(t): cands.append(t)
-          src = cands[-1] if cands else None
-          if not src: continue
-          d = stack[-1]
-          obj = next((toks[i + 1] for i, t in enumerate(toks) if t == "-o" and i + 1 < len(toks)), None)
-          # Dedup key is the output canonicalised against the directory the
-          # compile actually ran in, so two recursive makes emitting the same
-          # relative -o from different directories do not collide.
-          if obj:
-              out_abs = obj if os.path.isabs(obj) else os.path.normpath(os.path.join(d, obj))
-              key = ("o", out_abs)
-          else:
-              key = ("s", d, src)
-          e = {"directory": d, "file": src, "arguments": toks}
-          if key in seen: entries[seen[key]] = e
-          else: seen[key] = len(entries); entries.append(e)
-      if not entries:
-          sys.stderr.write("gen: no compile commands (build up to date or not verbose)\n"); sys.exit(1)
-      json.dump(entries, open(out, "w"), indent=2)
-      sys.stderr.write("gen: wrote %d entries to %s\n" % (len(entries), out))
-      PY
-      # Run the build|parse pipelines under bash with pipefail so a make failure
-      # mid-pipe fails the job rather than yielding a partial database.
-      bash -o pipefail -c 'make V=1 -w -j1 system 2>&1 | python3 /tmp/gen_cc.py src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json'
-      rm -rf src/micropython/ports/unix/build-* src/unix/build
-      make mpy-cross
-      bash -o pipefail -c 'make V=1 -w -j1 unix-port unix-frozen-code 2>&1 | python3 /tmp/gen_cc.py src/micropython/ports/unix/build-standard/compile_commands.json'
-    # Completeness gate: every C object built must have a database entry whose
-    # recorded source matches the object's own .P dependency file (the
-    # compiler's real -MD output, py/mkrules.mk's -MF $(@:.o=.d) copied to a
-    # sibling .P). Matching by output path alone is not sufficient: a
-    # same-named entry with the wrong source would otherwise pass silently.
-    # Assembly objects (no -MD step, so no .P) are the only permitted absences.
-    # Mirrors tools/sast/check-compile-db.py, fail-closed.
-    - |
-      python3 - <<'PY'
-      import glob, json, os, sys
-      C=(".c",".cc",".cpp",".cxx",".c++"); ASM=(".s",".S",".asm")
-      def rp(p): return os.path.realpath(p)
-      def eargs(e):
-          return e["arguments"] if "arguments" in e else e["command"].split()
-      def eout(e):
-          a=eargs(e); o=e.get("output")
-          if o is None:
-              for i,x in enumerate(a):
-                  if x=="-o" and i+1<len(a): o=a[i+1]; break
-          if o is None: return None
-          return rp(o if os.path.isabs(o) else os.path.join(e["directory"],o))
-      def esrc(e):
-          s=e.get("file")
-          if not s: return None
-          return rp(s if os.path.isabs(s) else os.path.join(e["directory"],s))
-      def under(path, roots):
-          ap=rp(path)
-          for r in roots:
-              rr=rp(r)
-              if ap==rr: return True
-              try:
-                  if os.path.commonpath([ap,rr])==rr: return True
-              except ValueError: pass
-          return False
-      def dep_file(obj):
-          if not obj.endswith(".o"): return None
-          p = obj[:-2]+".P"
-          return p if os.path.exists(p) else None
-      def primary_source(dep_path):
-          try:
-              with open(dep_path) as f:
-                  joined=""
-                  for raw in f:
-                      line=raw.rstrip("\n"); cont=line.endswith("\\")
-                      joined += (line[:-1] if cont else line) + " "
-                      if not cont: break
-          except OSError: return None
-          if ":" not in joined: return None
-          _,_,rest = joined.partition(":")
-          toks = rest.split()
-          return toks[0] if toks else None
-      def resolve_dep_source(dep_path, compile_dir):
-          s = primary_source(dep_path)
-          if not s: return None
-          return rp(s if os.path.isabs(s) else os.path.join(compile_dir, s))
-      def classify_no_dep(obj, build_dir, roots):
-          stem = os.path.relpath(obj, build_dir)[:-2]
-          all_roots = [build_dir] + roots
-          def found(sufs):
-              for r in all_roots:
-                  for s in sufs:
-                      if os.path.exists(os.path.join(r, stem+s)): return True
-              for s in sufs:
-                  c = os.path.join("/", stem+s)
-                  if under(c, roots) and os.path.exists(c): return True
-              return False
-          if found(ASM): return "asm"
-          if found(C): return "c"
-          return "unknown"
-      def check(db_path, build, roots):
-          db = json.load(open(db_path))
-          by_out = {}
-          for e in db:
-              o=eout(e); s=esrc(e)
-              if o is None or s is None: continue
-              if not under(o, [build]): continue
-              by_out.setdefault(o, []).append(e)
-          objs=[rp(o) for o in glob.glob(build+"/**/*.o", recursive=True)]
-          objs=sorted(set(objs))
-          if not objs:
-              print(f"{db_path}: no object files under {build} - build did not run or path wrong")
-              sys.exit(2)
-          missing=[]
-          for obj in objs:
-              cands = by_out.get(obj, [])
-              dep = dep_file(obj)
-              if not cands:
-                  if dep is not None:
-                      missing.append(obj)  # real C/C++ object, no entry at all
-                      continue
-                  kind = classify_no_dep(obj, build, roots)
-                  if kind != "asm": missing.append(obj)
-                  continue
-              if dep is None:
-                  # No dependency file to cross-check: require the entry's own
-                  # source to at least resolve under a source root.
-                  if not any(os.path.exists(esrc(e)) and under(esrc(e), roots) for e in cands):
-                      missing.append(obj)
-                  continue
-              dep_sources = {resolve_dep_source(dep, e["directory"]) for e in cands if e.get("directory")}
-              entry_sources = {esrc(e) for e in cands}
-              if not (dep_sources & entry_sources):
-                  missing.append(obj)
-          print(f"{db_path}: {len(objs)} objects, {len(by_out)} entries, {len(missing)} missing/mismatched C TUs")
-          return missing
-      m1=check("src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json",
-               os.path.abspath("src/system/build-USB2CAN_NUCLEO_H563ZI"),
-               [os.path.abspath("src/micropython"),os.path.abspath("src/system"),
-                os.path.abspath("src/micropython/ports/stm32")])
-      m2=check("src/micropython/ports/unix/build-standard/compile_commands.json",
-               os.path.abspath("src/micropython/ports/unix/build-standard"),
-               [os.path.abspath("src/micropython")])
-      if m1 or m2:
-          for o in m1+m2: print("MISSING/MISMATCH", o)
-          sys.exit(1)
-      print("COMPLETE")
-      PY
+    - make compile-commands
   artifacts:
     paths:
       - src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
+      - src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.check.json
       - src/micropython/ports/unix/build-standard/compile_commands.json
+      - src/micropython/ports/unix/build-standard/compile_commands.check.json
     expire_in: 1 week
 
-# When GitLab Advanced SAST is enabled for C/C++, it reads the database above:
+# When GitLab Advanced SAST is enabled for C/C++, it reads this artefact:
 #   variables:
 #     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
 #     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/compile_commands.json
-# Wiring that scan is SAST-04's ticket; this job establishes the precondition.
+# SAST-04 wires that scan; this job establishes the verified database prerequisite.

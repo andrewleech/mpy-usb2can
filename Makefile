@@ -74,7 +74,8 @@ IMAGE ?= micropython/build-micropython-arm
 DOCKER_ENV_FILTER = env -i HOME="$$HOME" USER="$$USER" PATH="$$PATH" TERM="$$TERM" SHELL="$$SHELL" \
   MICROPY_GIT_TAG="$(MICROPY_GIT_TAG)" MICROPY_GIT_HASH="$(MICROPY_GIT_HASH)"
 DOCKER_VERSION = -e MICROPY_GIT_TAG -e MICROPY_GIT_HASH
-DOCKER = @$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(IMAGE)
+DOCKER_IMAGE ?= $(IMAGE)
+DOCKER = @$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(DOCKER_IMAGE)
 # Minimal environment for reproducible builds (e.g., mpy-cross)
 DOCKER_CLEAN_ENV = env -i PATH="$$PATH" LANG=C.UTF-8 LC_ALL=C.UTF-8
 DOCKER_CLEAN = @$(DOCKER_CLEAN_ENV) docker run --rm -v "$$(pwd):$$(pwd)" -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(IMAGE)
@@ -173,26 +174,104 @@ else
 	make -C src/system $(FW_OPTIONS) EXCLUDE_APP=1
 endif
 
-# Generate a compilation database (compile_commands.json) from the real firmware
-# build. This is the SAST scope authority for what is actually compiled, consumed
-# by cppcheck, GitLab Advanced SAST and Coverity. The database is written into
-# each port's build directory (src/system/build-<BOARD>/ and the unix port's
-# build dir), so the build tree's existing .gitignore covers it. The capture
-# tooling is part of the SAST programme and lives outside this repository, since
-# it spans every target; this target delegates to it. Point SAST_HARNESS at the
-# harness directory, or run from within the SAST planning tree where it is found
-# automatically at ../../tools/sast.
-SAST_HARNESS ?= $(wildcard $(PROJECT_BASE)/../../tools/sast)
-.PHONY: compile-commands
-compile-commands:  ## Generate compile_commands.json for SAST (needs the SAST harness)
-compile-commands:
-	@if [ -z "$(SAST_HARNESS)" ] || [ ! -x "$(SAST_HARNESS)/compile-db.sh" ]; then \
-		echo "$(BOLD)compile-commands needs the SAST harness.$(RESET)"; \
+# Generate and verify compilation databases from the target's real STM32 and
+# Unix builds. The generic tools live in the pinned MicroPython tree, so this
+# target is reproducible locally and in CI without an external SAST harness.
+COMPILATION_DB_IMAGE ?= micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
+COMPILATION_DB_STM32 = src/system/build-$(BOARD)/compile_commands.json
+COMPILATION_DB_STM32_CHECK = src/system/build-$(BOARD)/compile_commands.check.json
+COMPILATION_DB_UNIX = $(MICROPYTHON_BASE)/ports/unix/build-$(UNIX_VARIANT)/compile_commands.json
+COMPILATION_DB_UNIX_CHECK = $(MICROPYTHON_BASE)/ports/unix/build-$(UNIX_VARIANT)/compile_commands.check.json
+
+.PHONY: compile-commands compile-commands-native
+compile-commands:  ## Generate and verify firmware and unix compilation databases
+ifeq ($(RUN_IN_DOCKER), 1)
+ifeq ($(COMPILATION_DB_IN_CONTAINER),)
+	$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(COMPILATION_DB_IMAGE) $(MAKE) COMPILATION_DB_IN_CONTAINER=1 compile-commands-native BOARD=$(BOARD) PORT=$(PORT)
+else
+	$(MAKE) compile-commands-native BOARD=$(BOARD) PORT=$(PORT)
+endif
+else
+	$(MAKE) compile-commands-native BOARD=$(BOARD) PORT=$(PORT)
+endif
+
+compile-commands-native:
+	@echo "$(BOLD)Generating STM32 compilation database...$(RESET)"
+	$(MAKE) clean
+	$(MAKE) mpy-cross
+	@mkdir -p $(dir $(COMPILATION_DB_STM32))
+	python3 $(MICROPYTHON_BASE)/tools/gen_compile_commands.py -C src/system -o $(COMPILATION_DB_STM32) -- BOARD=$(BOARD) PORT=stm32 USE_MBOOT=1
+	python3 $(MICROPYTHON_BASE)/tools/check_compile_commands.py --db $(COMPILATION_DB_STM32) --build-dir src/system/build-$(BOARD) --source-root $(MICROPYTHON_BASE) --source-root src/system --source-root $(MICROPYTHON_BASE)/ports/stm32 --json-out $(COMPILATION_DB_STM32_CHECK)
+	@echo "$(BOLD)Generating Unix compilation database...$(RESET)"
+	rm -rf $(MICROPYTHON_BASE)/ports/unix/build-* src/unix/build
+	$(MAKE) mpy-cross
+	@mkdir -p $(dir $(COMPILATION_DB_UNIX))
+	python3 $(MICROPYTHON_BASE)/tools/gen_compile_commands.py -C $(MICROPYTHON_BASE)/ports/unix -o $(COMPILATION_DB_UNIX) -- VARIANT=$(UNIX_VARIANT) MPY_LIB_DIR=$(MPY_LIB_DIR) MICROPY_PY_FFI=0 CWARN="-Wall -Wno-error=int-conversion -Wno-error=return-type" CFLAGS_EXTRA="-DMICROPY_ENABLE_SCHEDULER=1 -DMICROPY_PY_UPLATFORM=1" all
+	MICROPY_MPYCROSS=$(MPY_CROSS) $(MAKE) -C src/unix
+	python3 $(MICROPYTHON_BASE)/tools/check_compile_commands.py --db $(COMPILATION_DB_UNIX) --build-dir $(MICROPYTHON_BASE)/ports/unix/build-$(UNIX_VARIANT) --source-root $(MICROPYTHON_BASE) --json-out $(COMPILATION_DB_UNIX_CHECK)
+
+# Resolve the manifest-declared Python and user-C scope through this target's
+# pinned MicroPython parser.  The scope artefact lives in the STM32 build tree
+# with other generated SAST outputs.  The resolver and ownership policy stay in
+# the programme harness because they are shared by every target.
+.PHONY: manifest-scope
+manifest-scope:  ## Generate manifest-derived SAST scope (needs the SAST harness)
+manifest-scope:
+	@if [ "$(BOARD)" != "USB2CAN_NUCLEO_H563ZI" ]; then \
+		echo "$(BOLD)manifest-scope currently supports BOARD=USB2CAN_NUCLEO_H563ZI only.$(RESET)"; \
+		exit 2; \
+	fi
+	@if [ -z "$(SAST_HARNESS)" ] || [ ! -x "$(SAST_HARNESS)/resolve_manifest_scope.py" ] || [ ! -x "$(SAST_HARNESS)/compare_manifest_scopes.py" ]; then \
+		echo "$(BOLD)manifest-scope needs the SAST harness resolver and comparison tools.$(RESET)"; \
 		echo "Set SAST_HARNESS=/path/to/tools/sast, or run inside the SAST planning tree."; \
 		exit 1; \
 	fi
-	@echo "$(BOLD)Generating compilation database via the SAST harness...$(RESET)"
-	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/compile-db.sh $(CDBARGS)
+	@mkdir -p src/system/build-$(BOARD)
+	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/resolve_manifest_scope.py \
+		--target-root $(PROJECT_BASE) \
+		--config $(SAST_HARNESS)/mpy-usb2can-manifest-scope.json \
+		--configuration stm32-USB2CAN_NUCLEO_H563ZI \
+		--output src/system/build-$(BOARD)/manifest_scope-stm32.json
+	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/resolve_manifest_scope.py \
+		--target-root $(PROJECT_BASE) \
+		--config $(SAST_HARNESS)/mpy-usb2can-manifest-scope.json \
+		--configuration unix-standard \
+		--output src/system/build-$(BOARD)/manifest_scope-unix.json
+	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/resolve_manifest_scope.py \
+		--target-root $(PROJECT_BASE) \
+		--config $(SAST_HARNESS)/mpy-usb2can-manifest-scope.json \
+		--configuration stm32-USB2CAN_NUCLEO_H563ZI-libs-only \
+		--output src/system/build-$(BOARD)/manifest_scope-libs-only.json
+	SAST_TARGET_REPO=$(notdir $(PROJECT_BASE)) $(SAST_HARNESS)/compare_manifest_scopes.py \
+		--scope src/system/build-$(BOARD)/manifest_scope-stm32.json \
+		--scope src/system/build-$(BOARD)/manifest_scope-unix.json \
+		--scope src/system/build-$(BOARD)/manifest_scope-libs-only.json \
+		--output src/system/build-$(BOARD)/manifest_scope_configuration_differences.json
+	@echo "$(BOLD)Manifest scope artefacts and configuration differences written to src/system/build-$(BOARD)/$(RESET)"
+
+SAST_EVIDENCE_ROOT ?= $(SAST_HARNESS)/../../planning/results/SAST-01
+.PHONY: manifest-scope-check
+manifest-scope-check: compile-commands manifest-scope  ## Reconcile STM32 and Unix manifest scopes with compiled C
+manifest-scope-check:
+	$(SAST_HARNESS)/check_manifest_scope.py \
+		--target-root $(PROJECT_BASE) \
+		--scope src/system/build-$(BOARD)/manifest_scope-stm32.json \
+		--configuration stm32-USB2CAN_NUCLEO_H563ZI \
+		--database src/system/build-$(BOARD)/compile_commands.json \
+		--policy $(SAST_HARNESS)/mpy-usb2can-manifest-scope.json \
+		--resolver $(SAST_HARNESS)/resolve_manifest_scope.py \
+		--evidence-root $(SAST_EVIDENCE_ROOT) \
+		--output src/system/build-$(BOARD)/manifest_scope_cross_check.json
+	$(SAST_HARNESS)/check_manifest_scope.py \
+		--target-root $(PROJECT_BASE) \
+		--scope src/system/build-$(BOARD)/manifest_scope-unix.json \
+		--configuration unix-standard \
+		--database src/micropython/ports/unix/build-standard/compile_commands.json \
+		--policy $(SAST_HARNESS)/mpy-usb2can-manifest-scope.json \
+		--resolver $(SAST_HARNESS)/resolve_manifest_scope.py \
+		--evidence-root $(SAST_EVIDENCE_ROOT) \
+		--output src/micropython/ports/unix/build-standard/manifest_scope_cross_check.json
+	@echo "$(BOLD)STM32 and Unix manifest/database cross-checks written to their build directories.$(RESET)"
 
 
 .PHONY: mboot bootloader
