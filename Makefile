@@ -488,6 +488,49 @@ cppcheck-coverage-mboot:
 cppcheck-coverage-unix:
 	$(call CPPCHECK_RUN,$(UNIX_BUILD),unix-$(UNIX_VARIANT),--coverage-only)
 
+# --- A second free tool: GCC's own -fanalyzer ------------------------------------------------
+#
+# No new procurement: arm-none-eabi-gcc already builds this firmware, and -fanalyzer is built into
+# GCC 10+, which the analysis image already carries as its base layer. This replays the exact
+# command line the compilation database recorded, per translation unit, so it is the same
+# compilation the firmware ships with rather than a second, independently-derived one.
+define FANALYZER_RUN
+	@test -f $(1)/compile_commands.json || { \
+	  echo "$(1)/compile_commands.json is missing. Run the matching compile-commands target first."; \
+	  exit 1; }
+	$(SAST_RUN) sast-fanalyzer \
+	  --compile-commands $(1)/compile_commands.json \
+	  --root $(PROJECT_BASE) --out $(1)/fanalyzer --configuration $(2) \
+	  --policy-dir $(ANALYSIS_POLICY)
+endef
+
+.PHONY: fanalyzer
+fanalyzer:  ## Analyse the firmware configuration for the current BOARD and PORT with GCC -fanalyzer
+fanalyzer: $(SAST_IMAGE_CHECK)
+	$(call FANALYZER_RUN,$(FW_BUILD),$(PORT)-$(BOARD))
+
+.PHONY: fanalyzer-mboot
+fanalyzer-mboot:  ## Analyse the bootloader configuration (stm32 only) with GCC -fanalyzer
+fanalyzer-mboot: $(SAST_IMAGE_CHECK)
+	$(call FANALYZER_RUN,$(FW_BUILD)/mboot,$(PORT)-$(BOARD)-mboot)
+
+.PHONY: fanalyzer-unix
+fanalyzer-unix:  ## Analyse the unix port configuration with GCC -fanalyzer
+fanalyzer-unix: $(SAST_IMAGE_CHECK)
+	$(call FANALYZER_RUN,$(UNIX_BUILD),unix-$(UNIX_VARIANT))
+
+# Coverage here means every translation unit in the database completed the analyser without timing
+# out or crashing it; there is no separate cheap pass the way cppcheck has one, so this is the same
+# invocation as the targets above, not a lighter one.
+.PHONY: check-fanalyzer
+check-fanalyzer:  ## Fail if -fanalyzer did not complete over every translation unit in the database
+check-fanalyzer: $(SAST_IMAGE_CHECK)
+	$(call FANALYZER_RUN,$(FW_BUILD),$(PORT)-$(BOARD))
+	@if [ -f $(FW_BUILD)/mboot/compile_commands.json ]; then \
+	  $(MAKE) --no-print-directory fanalyzer-mboot; fi
+	@if [ -f $(UNIX_BUILD)/compile_commands.json ]; then \
+	  $(MAKE) --no-print-directory fanalyzer-unix; fi
+
 
 .PHONY: clean
 clean:  ## Delete compiled artifacts
