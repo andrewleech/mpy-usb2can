@@ -1,0 +1,52 @@
+# Compilation-database artefact for SAST-01, captured the same way the Makefile targets do it
+# locally and in the GitHub Actions sast job: a compiler shim records the real invocation, and
+# sast-compdb reconciles it against the build's own object files.
+#
+# The job runs inside $SAST_IMAGE, which holds the toolchain, the shim and the sast-* entry points.
+# /.dockerenv inside it makes the Makefile run each target directly rather than wrapping it in a
+# nested `docker run`, so the job needs no docker access and works on any docker executor. The
+# image has no uv, which the Makefile uses to resolve the build version on the host, so the job
+# resolves it with git-versioner itself and exports MICROPY_GIT_TAG/MICROPY_GIT_HASH; that needs
+# full history and tags.
+#
+# $SAST_IMAGE is not yet published to a registry a runner can pull from, so the job is manual and
+# allowed to fail: an unpullable image fails it visibly at job start rather than passing with no
+# artefact. It has been run locally inside the image, not yet on a real runner. Once the image is
+# published, drop `when` and `allow_failure`.
+
+stages:
+  - compile-db
+
+compile-commands:
+  stage: compile-db
+  image: $SAST_IMAGE
+  when: manual
+  allow_failure: true
+  variables:
+    # Must equal pyproject.toml's [tool.degraves-sast] image; GitLab resolves `image:` before any
+    # script runs, so it cannot read it from there. The first script line fails the job on drift.
+    SAST_IMAGE: degraves-sast:2.21.0
+    GIT_DEPTH: 0
+    GIT_FETCH_EXTRA_FLAGS: --tags
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - git config --global --add safe.directory '*'
+    - test "$(make -s sast-image)" = "$SAST_IMAGE" || { echo "SAST_IMAGE does not match pyproject.toml"; exit 1; }
+    - make submodules
+    - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
+    - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
+    - export MICROPY_GIT_TAG MICROPY_GIT_HASH
+  script:
+    - make compile-commands-mboot
+    - make compile-commands-unix
+  artifacts:
+    paths:
+      - src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/compile_commands.json
+      - src/micropython/ports/unix/build-standard/compile_commands.json
+    expire_in: 1 week
+
+# When GitLab Advanced SAST is enabled for C/C++, it reads this artefact:
+#   variables:
+#     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
+#     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/compile_commands.json
+# SAST-04 wires that scan; this job establishes the verified database prerequisite.
