@@ -1,0 +1,293 @@
+{
+  "comment": [
+    "Ownership policy for analysis scope. Two orthogonal axes, per the SAST programme's rules:",
+    "control is whether a finding can be fixed in this repository; provenance is whether we wrote",
+    "the code. Enforcement follows the combination, so collapsing them into one class list produces",
+    "wrong decisions.",
+    "",
+    "Matching is by longest path prefix, relative to the repository root. A path matching no rule is",
+    "an error: defaulting an unclassified path to any class either enforces a standard over code we",
+    "did not write, or silently exempts code we did.",
+    "",
+    "Provenance is stated here rather than derived from the submodule remote alone, because a remote",
+    "says where code is hosted and not who authored it. The remotes are recorded beside each rule so",
+    "the claim is checkable.",
+    "",
+    "first_party_header_roots is not declared here. It is derived from every rule whose control is in-repo, so there is one definition of a first-party path rather than two that can drift.",
+    "Rules are required for nested submodules too, not only the root's. src/micropython declares thirty-four of its own, which is where this project's third-party C actually lives; without a rule each they inherit the fork's class and a vendored library is reported as code carrying a delta we wrote."
+  ],
+  "rules": [
+    {
+      "path": "src/micropython",
+      "control": "owned-external",
+      "provenance": "fork-with-delta",
+      "remote": "https://github.com/andrewleech/micropython.git",
+      "note": "Fork of micropython/micropython on branch usb2can-integration. No upstream remote is configured in the submodule, so the delta is not computable here and the fork cannot yet be enforced on its delta only."
+    },
+    {
+      "path": "src/libs/micropython-lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/micropython-lib.git"
+    },
+    {
+      "path": "src/libs/micropython_unittest_junit",
+      "control": "owned-external",
+      "provenance": "authored",
+      "remote": "https://gitlab.com/alelec/micropython_unittest_junit.git"
+    },
+    {
+      "path": "src/libs/structured_config",
+      "control": "owned-external",
+      "provenance": "authored",
+      "remote": "https://gitlab.com/alelec/micropython-structured-config.git"
+    },
+    {
+      "path": "src/firmware",
+      "control": "in-repo",
+      "provenance": "authored"
+    },
+    {
+      "path": "src/libs",
+      "control": "in-repo",
+      "provenance": "authored",
+      "note": "The bare src/libs path covers this repository's own manifest and any file directly in it. Submodules beneath it match their own longer-prefix rules above."
+    },
+    {
+      "path": "src/system",
+      "control": "in-repo",
+      "provenance": "authored"
+    },
+    {
+      "path": "src/unix",
+      "control": "in-repo",
+      "provenance": "authored"
+    },
+    {
+      "path": "tools",
+      "control": "in-repo",
+      "provenance": "authored"
+    },
+    {
+      "path": "src/micropython/lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "note": "MicroPython's repository layout designates lib/ as third-party code, which is the basis for this rule and covers the directories vendored in-tree rather than as submodules (libm, littlefs, oofatfs, re1.5, uzlib and the rest). Submodules beneath it match their own longer-prefix rules above, so a newly added one still fails loudly. Unverified where it matters most: a fork delta under lib/ would be classified vendored by this rule, and the delta is not computable while the src/micropython submodule has no upstream remote configured."
+    },
+    {
+      "path": "src/micropython/lib/CMSIS_5",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/ARM-software/CMSIS_5.git"
+    },
+    {
+      "path": "src/micropython/lib/CMSIS_6",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/ARM-software/CMSIS_6.git"
+    },
+    {
+      "path": "src/micropython/lib/alif-security-toolkit",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/alif-security-toolkit.git"
+    },
+    {
+      "path": "src/micropython/lib/alif_ensemble-cmsis-dfp",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/alifsemi/alif_ensemble-cmsis-dfp.git"
+    },
+    {
+      "path": "src/micropython/lib/arduino-lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/arduino/arduino-lib-mpy.git"
+    },
+    {
+      "path": "src/micropython/lib/asf4",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/adafruit/asf4"
+    },
+    {
+      "path": "src/micropython/lib/axtls",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/axtls.git"
+    },
+    {
+      "path": "src/micropython/lib/berkeley-db-1.xx",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/berkeley-db-1.xx"
+    },
+    {
+      "path": "src/micropython/lib/btstack",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/bluekitchen/btstack.git"
+    },
+    {
+      "path": "src/micropython/lib/cyw43-driver",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/georgerobotics/cyw43-driver.git"
+    },
+    {
+      "path": "src/micropython/lib/fsp",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/renesas/fsp.git"
+    },
+    {
+      "path": "src/micropython/lib/libffi",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/libffi/libffi"
+    },
+    {
+      "path": "src/micropython/lib/libhydrogen",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/jedisct1/libhydrogen.git"
+    },
+    {
+      "path": "src/micropython/lib/libmetal",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/OpenAMP/libmetal.git"
+    },
+    {
+      "path": "src/micropython/lib/lwip",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/lwip-tcpip/lwip.git"
+    },
+    {
+      "path": "src/micropython/lib/mbedtls",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/ARMmbed/mbedtls.git"
+    },
+    {
+      "path": "src/micropython/lib/mbedtls/framework",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Mbed-TLS/mbedtls-framework"
+    },
+    {
+      "path": "src/micropython/lib/micropython-lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/micropython-lib.git"
+    },
+    {
+      "path": "src/micropython/lib/mynewt-nimble",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/mynewt-nimble.git"
+    },
+    {
+      "path": "src/micropython/lib/nrfx",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/NordicSemiconductor/nrfx.git"
+    },
+    {
+      "path": "src/micropython/lib/nxp_driver",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/nxp_driver.git"
+    },
+    {
+      "path": "src/micropython/lib/open-amp",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/OpenAMP/open-amp.git"
+    },
+    {
+      "path": "src/micropython/lib/pico-sdk",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/raspberrypi/pico-sdk.git"
+    },
+    {
+      "path": "src/micropython/lib/protobuf-c",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/protobuf-c/protobuf-c.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/TARGET_KIT_PSE84_AI",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/TARGET_KIT_PSE84_AI.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/async-transfer",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/async-transfer.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/core-lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/core-lib.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/mtb-dsl-pse8xxgp",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/mtb-dsl-pse8xxgp.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/mtb-ipc",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/mtb-ipc.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/mtb-srf",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/mtb-srf.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/se-rt-services-utils",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/se-rt-services-utils.git"
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge/serial-memory",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/Infineon/serial-memory.git"
+    },
+    {
+      "path": "src/micropython/lib/stm32lib",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/stm32lib"
+    },
+    {
+      "path": "src/micropython/lib/tinyusb",
+      "control": "not-ours",
+      "provenance": "vendored-upstream",
+      "remote": "https://github.com/micropython/tinyusb.git"
+    },
+    {
+      "path": "src/micropython/lib/wiznet5k",
+      "control": "owned-external",
+      "provenance": "fork-with-delta",
+      "remote": "https://github.com/andrewleech/wiznet_ioLibrary_Driver.git",
+      "note": "A fork of Wiznet's driver owned by this project's author, pinned by MicroPython upstream rather than chosen here. No configuration in this repository compiles it."
+    }
+  ],
+  "generated_path_markers": [
+    "/build-",
+    "/genhdr/"
+  ]
+}

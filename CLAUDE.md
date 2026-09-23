@@ -26,6 +26,34 @@ make clean          # remove build output
 
 Output lands in `src/system/build-USB2CAN_NUCLEO_H563ZI/`.
 
+### Static analysis
+
+```bash
+make compile-commands          # firmware, for the current BOARD and PORT
+make compile-commands-mboot    # bootloader (stm32 only)
+make compile-commands-unix     # unix port
+make check-compile-commands    # reconcile each database against its build output
+make scope                     # resolve analysis scope from the manifest chain
+make check-scope               # fail if the manifest declares what the scope does not cover
+make cppcheck                  # analyse the firmware configuration
+make check-cppcheck            # fail if the analysis missed a translation unit
+```
+
+The analysers and the tooling these targets call are **not in this repository**. They come from the
+image named by `SAST_IMAGE`, declared in `pyproject.toml` under `[tool.degraves-sast]`, which is the
+project's build toolchain plus cppcheck and the `sast-*` entry points. Build or pull it first; the
+targets refuse to run without it and say so. This is the same arrangement as the compiler, which
+comes from `micropython/build-micropython-arm` rather than from here.
+
+What this repository does hold is `analysis/`, its own policy: `ownership.json` for which of its
+paths are first-party, `configurations.json` for the agreed build configurations, and
+`suppressions.json` and `coverage-gaps.json` for what it has judged suppressible or accepted. Those
+describe this project, so they belong to it.
+
+Output lands in each configuration's build directory, beside the firmware, and `make clean` is the
+only thing that removes it. The exception is `make scope`, whose artefacts span configurations and
+go to `build/scope`.
+
 ### Testing
 ```bash
 make tests               # unit tests on the unix port

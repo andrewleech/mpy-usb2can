@@ -1,0 +1,92 @@
+{
+  "comment": [
+    "Coverage gaps that are known, measured and accepted, so that the coverage check gates on a new",
+    "one rather than staying red on an old one. A gate that is permanently failing is a gate nobody",
+    "reads.",
+    "An entry names the configurations it was measured in. A configuration that does not compile the file cannot reproduce the gap, so an entry is only expected to match, and only counted stale, in the configurations it names.",
+    "",
+    "An entry is matched by id, file and line, and by the set of translation units the failure was",
+    "measured to cost. The unit set is the load-bearing half: a failure that spreads to a unit not",
+    "listed here fails the check, because a gap that grows is a new gap. An entry that matches",
+    "nothing also fails the check, so that a gap fixed by a tool upgrade is removed rather than left",
+    "asserting a limitation that no longer exists.",
+    "",
+    "This is not a suppression list. A suppression hides a finding about the code; an entry here",
+    "records that the analyser could not read some of the code, which is the opposite claim and has",
+    "to stay visible in every summary."
+  ],
+  "accepted": [
+    {
+      "id": "syntaxError",
+      "file": "src/micropython/lib/tinyusb/src/common/tusb_mcu.h",
+      "line": 59,
+      "translation_units": [
+        "src/micropython/extmod/modmachine.c"
+      ],
+      "tool": "Cppcheck 2.21.0",
+      "added": "2026-09-14",
+      "reason": "cppcheck's preprocessor does not expand TU_ARGS_APPLY_3, whose name tinyusb forms by token pasting, when it is reached through this translation unit. The compiler expands it, and the other 42 translation units that include the same header preprocess normally, so it is specific to this unit's include path rather than to the header. One translation unit of 539 is unanalysed and the finding count for this configuration is understated by whatever it contains.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/py/grammar.h",
+      "line": 84,
+      "translation_units": [
+        "src/micropython/py/parse.c"
+      ],
+      "tool": "Cppcheck 2.21.0",
+      "added": "2026-09-14",
+      "reason": "Maximum AST depth exceeded. py/grammar.h is a table of nested DEF_RULE macros that expands into a single deeply nested initialiser, and cppcheck's parser has a depth limit the compiler does not. The parser, py/parse.c, is unanalysed.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "unix-standard"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/py/vmentrytable.h",
+      "line": 40,
+      "translation_units": [
+        "src/micropython/py/vm.c"
+      ],
+      "tool": "Cppcheck 2.21.0",
+      "added": "2026-09-14",
+      "reason": "AST broken, binary operator '=' without two operands. vmentrytable.h builds a computed-goto dispatch table out of GCC label addresses, which cppcheck's parser does not model. The interpreter loop, py/vm.c, is unanalysed. This is the most significant of the three gaps: it is the core of the runtime and it is first-party to the MicroPython fork rather than vendored.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "unix-standard"
+      ]
+    },
+    {
+      "id": "preprocessorErrorDirective",
+      "file": "src/micropython/lib/mbedtls/library/platform_util.c",
+      "line": 256,
+      "configurations": [
+        "unix-standard"
+      ],
+      "translation_units": [
+        "src/micropython/lib/mbedtls/library/platform_util.c"
+      ],
+      "tool": "Cppcheck 2.21.0",
+      "added": "2026-09-14",
+      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One vendored translation unit is unanalysed. Giving cppcheck those headers is not the fix: on glibc it costs 299 of this configuration's 318 units, which is the measurement behind --system-includes=none."
+    },
+    {
+      "id": "preprocessorErrorDirective",
+      "file": "src/micropython/extmod/modselect.c",
+      "line": 52,
+      "configurations": [
+        "unix-standard"
+      ],
+      "translation_units": [
+        "src/micropython/extmod/modselect.c"
+      ],
+      "tool": "Cppcheck 2.21.0",
+      "added": "2026-09-14",
+      "reason": "The file asserts that its own POLL constants match <poll.h>'s, which is not resolved. Same cause and same trade-off as the mbedtls entry. One translation unit of the MicroPython fork is unanalysed in this configuration; it is analysed in neither stm32 configuration because neither compiles it."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "comment": [
+    "Suppressions, separate from settings.json and from any command line, with a reason per entry.",
+    "run.py generates the cppcheck XML suppression file from this; cppcheck's own format has no",
+    "field for a reason, so this file is the authority and the generated one is an artefact.",
+    "",
+    "Entry fields: id (cppcheck error id, or * for all), path (repository-relative, glob allowed,",
+    "optional), line (optional), symbol (optional), class (why it is suppressible), reason (why",
+    "this specific finding is not a defect here), added (ISO date).",
+    "",
+    "class is one of:",
+    "  false-positive     the analyser is wrong about this code",
+    "  not-applicable     the finding describes a real property that is not a defect on this target",
+    "  upstream           the code is vendored and the finding belongs to its upstream, not here",
+    "An entry whose class is upstream is a reporting decision, not a safety one: it must never be",
+    "used for a memory-safety, injection or crypto-misuse finding, which are evaluated over the",
+    "whole compiled surface whatever its provenance.",
+    "",
+    "The list is empty. Nothing has been triaged as suppressible yet, and an entry added to reduce",
+    "a finding count without that evidence is the failure this file exists to make visible."
+  ],
+  "suppressions": []
+}
