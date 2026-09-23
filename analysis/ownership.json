@@ -14,7 +14,9 @@
     "the claim is checkable.",
     "",
     "first_party_header_roots is not declared here. It is derived from every rule whose control is in-repo, so there is one definition of a first-party path rather than two that can drift.",
-    "Rules are required for nested submodules too, not only the root's. src/micropython declares thirty-four of its own, which is where this project's third-party C actually lives; without a rule each they inherit the fork's class and a vendored library is reported as code carrying a delta we wrote."
+    "Rules are required for nested submodules too, not only the root's. src/micropython declares thirty-four of its own, which is where this project's third-party C actually lives; without a rule each they inherit the fork's class and a vendored library is reported as code carrying a delta we wrote.",
+    "A directory vendored in-tree under src/micropython/lib gets its own rule, not a prefix. The recursion into .gitmodules cannot see it, because it is not a submodule, so a prefix rule is the one place this policy would classify a new third-party library silently.",
+    "vendor_roots names a directory whose every immediate child is third party and must carry its own rule. It is checked against the filesystem, not against .gitmodules, which is what catches a library vendored in-tree rather than as a submodule."
   ],
   "rules": [
     {
@@ -22,7 +24,7 @@
       "control": "owned-external",
       "provenance": "fork-with-delta",
       "remote": "https://github.com/andrewleech/micropython.git",
-      "note": "Fork of micropython/micropython on branch usb2can-integration. No upstream remote is configured in the submodule, so the delta is not computable here and the fork cannot yet be enforced on its delta only."
+      "note": "Fork of micropython/micropython on branch usb2can-integration. The delta against upstream at pin 9cb7dff is 22 files, 681 added and 97 removed, merge base 4d80ff0, measured 2026-09-14 and recorded in planning/results/SAST-04/fork-delta-micropython.json in the SAST tree. It contains nothing under lib/. The submodule is a depth-1 shallow clone with only origin configured, so git cannot compute this locally; the GitHub compare API can, and must be re-run at every repin because the answer changes with the pin."
     },
     {
       "path": "src/libs/micropython-lib",
@@ -67,12 +69,6 @@
       "path": "tools",
       "control": "in-repo",
       "provenance": "authored"
-    },
-    {
-      "path": "src/micropython/lib",
-      "control": "not-ours",
-      "provenance": "vendored-upstream",
-      "note": "MicroPython's repository layout designates lib/ as third-party code, which is the basis for this rule and covers the directories vendored in-tree rather than as submodules (libm, littlefs, oofatfs, re1.5, uzlib and the rest). Submodules beneath it match their own longer-prefix rules above, so a newly added one still fails loudly. Unverified where it matters most: a fork delta under lib/ would be classified vendored by this rule, and the delta is not computable while the src/micropython submodule has no upstream remote configured."
     },
     {
       "path": "src/micropython/lib/CMSIS_5",
@@ -283,11 +279,109 @@
       "control": "owned-external",
       "provenance": "fork-with-delta",
       "remote": "https://github.com/andrewleech/wiznet_ioLibrary_Driver.git",
-      "note": "A fork of Wiznet's driver owned by this project's author, pinned by MicroPython upstream rather than chosen here. No configuration in this repository compiles it."
+      "note": "A fork of Wiznet's driver owned by this project's author. Verified 2026-09-14: micropython/micropython pins the same fork, so it is upstream's choice rather than this project's; the pinned commit is 6 commits ahead of kaizen8501/ioLibrary_Driver and every commit in that range is authored by Andrew Leech. No configuration in this repository compiles it, and it is not checked out here."
+    },
+    {
+      "path": "src/micropython/lib/crypto-algorithms",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "https://github.com/B-Con/crypto-algorithms",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/libm",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "fdlibm and musl, vendored by MicroPython",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/libm_dbl",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "fdlibm double-precision, vendored by MicroPython",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/littlefs",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "https://github.com/littlefs-project/littlefs",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/mbedtls_errors",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "generated from Mbed-TLS/mbedtls, vendored by MicroPython",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/oofatfs",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "http://elm-chan.org/fsw/ff/, vendored by MicroPython",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/psoc-edge",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "container directory for the Infineon submodules beneath it",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/re1.5",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "https://github.com/pfalcon/re1.5",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
+    },
+    {
+      "path": "src/micropython/lib/uzlib",
+      "control": "owned-external",
+      "provenance": "vendored-upstream",
+      "origin": "https://github.com/pfalcon/uzlib",
+      "note": "Third party, vendored in-tree rather than as a submodule, so the files live in andrewleech/micropython and are patchable there. Provenance is vendored, which governs the coding-standard families; control is owned-external, which is where a memory-safety fix would land, and those families evaluate the whole compiled surface whatever the provenance."
     }
   ],
   "generated_path_markers": [
-    "/build-",
-    "/genhdr/"
+    "build-*",
+    "genhdr"
+  ],
+  "vendor_roots": [
+    "src/micropython/lib"
+  ],
+  "build_output_rules": [
+    {
+      "pattern": "genhdr/**",
+      "control": "in-repo",
+      "provenance": "authored",
+      "reason": "MicroPython's own qstr, module and pin table generation over this project's manifest and board definition; content this project's build produces, not code copied in from elsewhere."
+    },
+    {
+      "pattern": "mboot/genhdr/**",
+      "control": "in-repo",
+      "provenance": "authored",
+      "reason": "Same generation as genhdr/**, run a second time for the bootloader's own build under mboot/."
+    },
+    {
+      "pattern": "frozen_content.c",
+      "control": "in-repo",
+      "provenance": "authored",
+      "reason": "The frozen module content MicroPython's manifest tooling produces from src/firmware and src/libs, both first-party per the rules above."
+    },
+    {
+      "pattern": "pins_*.c",
+      "control": "in-repo",
+      "provenance": "authored",
+      "reason": "The pin table MicroPython's board tooling generates from this project's board.csv; naming varies by board (pins_<BOARD>.c or pins_gen.c) but the source is always this project's own board definition."
+    },
+    {
+      "pattern": "mboot/pins_*.c",
+      "control": "in-repo",
+      "provenance": "authored",
+      "reason": "Same pin table generation as pins_*.c, run a second time for the bootloader's own build under mboot/."
+    }
   ]
 }
