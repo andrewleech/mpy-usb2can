@@ -1,0 +1,170 @@
+name: SAST full-depth analysis
+
+# Runs cppcheck across the full ownership surface: the firmware configuration (the whole
+# MicroPython core, the port and this repository's libraries, not only the two owned in-repo
+# translation units the per-PR gate in ci.yml scopes to) plus the bootloader configuration, both
+# with --scope=full rather than the PR gate's --scope=gate. This is deliberately not a per-PR
+# job: cppcheck.py's own coverage/SARIF checks are already slow and MISRA-crash-prone at the
+# bootloader's two translation units (see ci.yml's sast job), and the firmware configuration is
+# several hundred. Cadence follows Zephyr's own CodeQL workflow (push to the default branch, plus
+# a weekly cron): push catches a newly merged regression promptly, the weekly run catches drift
+# with no push to trigger it, such as an upstream MicroPython repin changing what the fork delta
+# actually is.
+#
+# CPPCHECK_SCOPE=full below is the whole compilation database each configuration builds, not the
+# ownership-buckets-marked-gate subset ci.yml's per-PR job restricts to. See ci.yml's sast job for
+# the image-availability and CI-unsetting mechanics this job shares with it.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+env:
+  CPPCHECK_CHECK_LEVEL: normal
+  CPPCHECK_SYSTEM_INCLUDES: none
+
+jobs:
+  sast-full:
+    name: C static analysis (cppcheck, full ownership surface)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      security-events: write
+    env:
+      CI: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the analysis image and source key
+        # The image is declared once, in pyproject.toml, and read back through the Makefile.
+        # SAST_SOURCE_KEY hashes the committed tree under src/ and analysis/, submodule pins
+        # included and build output excluded, so the cppcheck cache below is saved once per
+        # distinct source state rather than once per commit.
+        run: |
+          echo "SAST_IMAGE=$(make -s sast-image)" >> "$GITHUB_ENV"
+          echo "SAST_SOURCE_KEY=$(git ls-tree -r HEAD src analysis | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+      - name: Pull the analysis image
+        id: image
+        continue-on-error: true
+        run: docker pull "$SAST_IMAGE"
+      - name: Trust the workspace
+        if: steps.image.outcome == 'success'
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@v5
+        if: steps.image.outcome == 'success'
+      - name: Fetch submodules
+        if: steps.image.outcome == 'success'
+        run: make submodules
+
+      - name: Compile-commands (firmware configuration)
+        if: steps.image.outcome == 'success'
+        run: make compile-commands
+      - name: Compile-commands (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        run: make compile-commands-mboot
+
+      # Both databases exist here, unlike the PR gate, so the umbrella completeness and coverage
+      # targets apply directly rather than needing the mboot-scoped calls ci.yml's sast job uses.
+      - name: Reconcile compilation databases
+        if: steps.image.outcome == 'success'
+        run: make check-compile-commands
+
+      - name: Cache cppcheck analysis (firmware configuration)
+        if: steps.image.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/cache
+          key: cppcheck-firmware-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-${{ env.SAST_SOURCE_KEY }}
+          restore-keys: |
+            cppcheck-firmware-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-
+      - name: Cache cppcheck analysis (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/cache
+          key: cppcheck-mboot-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-${{ env.SAST_SOURCE_KEY }}
+          restore-keys: |
+            cppcheck-mboot-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-
+
+      # continue-on-error here for the same reason as ci.yml's sast job: the misra.py crash this
+      # SAST_IMAGE build hits on some translation units must not stop summary.json from being
+      # written, and check-cppcheck below still reads the real result with no tolerance of its own.
+      - name: cppcheck (firmware configuration, full ownership surface)
+        id: cppcheck-firmware
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        run: >
+          make cppcheck
+          CPPCHECK_SCOPE=full
+          CPPCHECK_CHECK_LEVEL=$CPPCHECK_CHECK_LEVEL
+          CPPCHECK_SYSTEM_INCLUDES=$CPPCHECK_SYSTEM_INCLUDES
+      - name: cppcheck (bootloader configuration, full ownership surface)
+        id: cppcheck-mboot
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        run: >
+          make cppcheck-mboot
+          CPPCHECK_SCOPE=full
+          CPPCHECK_CHECK_LEVEL=$CPPCHECK_CHECK_LEVEL
+          CPPCHECK_SYSTEM_INCLUDES=$CPPCHECK_SYSTEM_INCLUDES
+
+      - name: Analysis coverage (both configurations)
+        if: steps.image.outcome == 'success'
+        run: make check-cppcheck
+
+      - name: fanalyzer (firmware configuration, report only, not gated)
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        run: make fanalyzer
+      - name: fanalyzer (bootloader configuration, report only, not gated)
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        run: make fanalyzer-mboot
+
+      # Findings outside the owned in-repo surface are reported here, not gated: owned-external,
+      # fork-with-delta and vendored-upstream findings are gated in the repository that owns the
+      # fix (SAST-10), and owned in-repo coding-standard findings are ungated until ROADMAP gate
+      # G4 agrees a threshold and baseline. The owned in-repo security gate itself already runs,
+      # per PR, in ci.yml; running it again here on a push that already passed that gate would
+      # only reject an emergency merge that bypassed it, which is a real property worth keeping.
+      - name: Gate on owned in-repo security findings (firmware configuration)
+        if: steps.image.outcome == 'success'
+        run: |
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" --user "$(id -u):$(id -g)" "$SAST_IMAGE" \
+            sast-gate-check src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/summary.json
+      - name: Gate on owned in-repo security findings (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        run: |
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" --user "$(id -u):$(id -g)" "$SAST_IMAGE" \
+            sast-gate-check src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/summary.json
+
+      - name: Upload SARIF to code scanning (firmware configuration)
+        if: always() && steps.image.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/results.sarif
+          category: cppcheck-firmware-full
+      - name: Upload SARIF to code scanning (bootloader configuration)
+        if: always() && steps.image.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/results.sarif
+          category: cppcheck-mboot-full
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.image.outcome == 'success'
+        with:
+          name: sast-full
+          path: |
+            src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/coverage-summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/cppcheck/results.sarif
+            src/system/build-USB2CAN_NUCLEO_H563ZI/fanalyzer/
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/coverage-summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/results.sarif
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/fanalyzer/

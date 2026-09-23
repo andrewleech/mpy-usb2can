@@ -10,6 +10,10 @@ on:
 env:
   # Toolchain image mpbuild selects for the stm32 port.
   BUILD_IMAGE: micropython/build-micropython-arm
+  # cppcheck flags the sast and sast-full (sast-full.yml) jobs pass explicitly, so the analysis
+  # cache key can name them rather than trusting the Makefile's own defaults to stay in step.
+  CPPCHECK_CHECK_LEVEL: normal
+  CPPCHECK_SYSTEM_INCLUDES: none
 
 jobs:
   checks:
@@ -73,6 +77,148 @@ jobs:
             src/system/build-USB2CAN_NUCLEO_H563ZI/bootloader.*
             src/system/build-USB2CAN_NUCLEO_H563ZI/version.txt
           if-no-files-found: error
+
+  # C static analysis (SAST-08): runs cppcheck from a compilation database, classifies every
+  # finding by ownership, and fails the job when an owned in-repo path (first_party_authored or
+  # first_party_generated) carries a security-family finding (memory safety, not coding style).
+  # Everything else is reported, never gated, here: owned-external, fork-with-delta and
+  # vendored-upstream findings are gated in the repository that owns the fix, not here (SAST-10),
+  # and owned in-repo coding-standard findings (MISRA, style) are ungated until the degraves SAST
+  # programme's ROADMAP gate G4 agrees a threshold and baseline. See analysis/ownership.json for
+  # this repository's ownership policy and the SAST tree's tools/degraves_sast/data/profiles.json
+  # for the declarative ownership/family -> outcome table sast-gate-check reads. Scope here is the
+  # bootloader configuration only, the two translation units this repository authors in-repo
+  # (mboot); the full ownership surface runs separately, on push to main and weekly
+  # (sast-full.yml), because it is slow and MISRA-crash-prone in a way a per-PR gate cannot be.
+  #
+  # $SAST_IMAGE (images/cppcheck/Dockerfile in the degraves SAST tree, the projects' build
+  # toolchain plus cppcheck and this programme's tooling) is not published to any container
+  # registry a hosted runner can reach; it exists only as a local build on the engineer's own
+  # machine. A job-level `container:` on an image that cannot be pulled fails the whole job at
+  # "Initialize containers" before any step runs, which no step-level handling can intercept, so
+  # this job does not use one. It runs on a bare runner instead, attempts to pull the image as its
+  # own first step, and every later step is conditioned on that having succeeded: a runner that
+  # cannot reach the image skips the analysis cleanly rather than failing at container
+  # initialisation, and once the image is reachable every condition below evaluates true and the
+  # job runs for real. Unsetting CI below is what makes that work: the Makefile's own
+  # RUN_IN_DOCKER detection reads GitHub Actions' CI=true as proof of already being inside
+  # $SAST_IMAGE (true for the test and build jobs above, which do use a job-level container), which
+  # is false for this job's bare runner, so each sast-* invocation must instead be told to wrap
+  # itself in `docker run` against $SAST_IMAGE. That is the same path a developer's own machine
+  # takes when calling these targets outside a container, so nothing here is SAST-tooling logic
+  # that does not already live in the Makefile.
+  #
+  # continue-on-error appears only on the cppcheck tool step itself, never on the job or on the
+  # steps that decide pass/fail: the addon wiring in this SAST_IMAGE build hits an upstream
+  # cppcheck 2.21.0 crash in misra.py's misra_20_9 check on some translation units, so that one
+  # step's own exit code is not trustworthy, but summary.json is written before that exit code is
+  # decided and the gate step below still reads it with no tolerance of its own. Translation-unit
+  # coverage is checked separately, by the lightweight coverage-only pass a few steps down, which
+  # runs cppcheck's parse-only mode and so does not hit the same crash.
+  sast:
+    name: C static analysis (cppcheck, gate on owned in-repo security findings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+    env:
+      # Overrides the runner's default CI=true; see the block comment above.
+      CI: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the analysis image and source key
+        # The image is declared once, in pyproject.toml, and read back through the Makefile.
+        # SAST_SOURCE_KEY hashes the committed tree under src/ and analysis/, submodule pins
+        # included and build output excluded, so the cppcheck cache below is saved once per
+        # distinct source state rather than once per commit.
+        run: |
+          echo "SAST_IMAGE=$(make -s sast-image)" >> "$GITHUB_ENV"
+          echo "SAST_SOURCE_KEY=$(git ls-tree -r HEAD src analysis | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+      - name: Pull the analysis image
+        id: image
+        continue-on-error: true
+        run: docker pull "$SAST_IMAGE"
+      - name: Trust the workspace
+        if: steps.image.outcome == 'success'
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@v5
+        if: steps.image.outcome == 'success'
+      - name: Fetch submodules
+        if: steps.image.outcome == 'success'
+        run: make submodules
+      - name: Compile-commands (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        # This also reconciles the database against the build's own object files as it writes it
+        # (sast-compdb's completeness check), so an incomplete capture already fails this step.
+        # check-compile-commands' own umbrella form is not additionally called: its first check is
+        # unconditional on the firmware configuration's own database, which this job does not
+        # build, so it cannot run standalone against the bootloader configuration alone.
+        run: make compile-commands-mboot
+      # Restores the previous run's cppcheck analysis cache (--cppcheck-build-dir), so a PR that
+      # touches one file re-analyses that file rather than every translation unit in the
+      # configuration. Keyed on the analysis image (which pins the compiler and cppcheck version),
+      # the check-level/system-includes flags actually passed below and the source key; the prefix
+      # restore still reuses per-file results when only the source key moved.
+      - name: Cache cppcheck analysis (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/cache
+          key: cppcheck-mboot-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-${{ env.SAST_SOURCE_KEY }}
+          restore-keys: |
+            cppcheck-mboot-${{ env.SAST_IMAGE }}-${{ env.CPPCHECK_CHECK_LEVEL }}-${{ env.CPPCHECK_SYSTEM_INCLUDES }}-
+      - name: cppcheck (bootloader configuration)
+        id: cppcheck
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        # CPPCHECK_SCOPE=gate restricts analysis to the ownership buckets data/profiles.json marks
+        # outcome "gate" (the bootloader's owned in-repo translation units), rather than the whole
+        # mboot compilation database, which is what keeps this step fast enough to run on every PR.
+        run: >
+          make cppcheck-mboot
+          CPPCHECK_SCOPE=gate
+          CPPCHECK_CHECK_LEVEL=$CPPCHECK_CHECK_LEVEL
+          CPPCHECK_SYSTEM_INCLUDES=$CPPCHECK_SYSTEM_INCLUDES
+      # The translation-unit coverage duty check-cppcheck exists for. Its own umbrella form
+      # unconditionally reconciles the firmware configuration too, which this job does not build
+      # (it stays on the bootloader's two owned translation units to stay fast), so this calls the
+      # same mboot-scoped pass check-cppcheck itself runs for this configuration. Parse-only, so it
+      # does not hit the misra.py crash the analysis step above tolerates, and its own exit code is
+      # trusted with no tolerance of its own: a translation unit that was never even parsed is a
+      # blind spot regardless of what the deeper analysis above found.
+      - name: Analysis coverage (bootloader configuration)
+        if: steps.image.outcome == 'success'
+        run: make cppcheck-coverage-mboot
+      # -fanalyzer is a second, independently-derived tool (see the SAST tree's SAST-04), but its
+      # driver predates SAST-08's enforcement-profile split and does not yet write
+      # by_ownership_and_family_enforcement, so it has nothing for sast-gate-check to read. Report
+      # only, as an uploaded artefact for manual review, not part of the gate.
+      - name: fanalyzer (bootloader configuration, report only, not gated)
+        if: steps.image.outcome == 'success'
+        continue-on-error: true
+        run: make fanalyzer-mboot
+      - name: Gate on owned in-repo security findings
+        if: steps.image.outcome == 'success'
+        run: |
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" --user "$(id -u):$(id -g)" "$SAST_IMAGE" \
+            sast-gate-check src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/summary.json
+      - name: Upload SARIF to code scanning
+        if: always() && steps.image.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/results.sarif
+          category: cppcheck-mboot
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.image.outcome == 'success'
+        with:
+          name: sast-mboot
+          path: |
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/coverage-summary.json
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/cppcheck/results.sarif
+            src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/fanalyzer/
 
   release:
     name: Release
