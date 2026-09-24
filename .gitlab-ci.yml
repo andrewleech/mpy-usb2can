@@ -1,52 +1,108 @@
-# Compilation-database artefact for SAST-01, captured the same way the Makefile targets do it
-# locally and in the GitHub Actions sast job: a compiler shim records the real invocation, and
-# sast-compdb reconciles it against the build's own object files.
-#
-# The job runs inside $SAST_IMAGE, which holds the toolchain, the shim and the sast-* entry points.
+# C static analysis, the same Make targets as .github/workflows/sast.yml and a local run
+# (CLAUDE.md, Static analysis), per agreed configuration, in the stock MicroPython build image.
 # /.dockerenv inside it makes the Makefile run each target directly rather than wrapping it in a
 # nested `docker run`, so the job needs no docker access and works on any docker executor. The
-# image has no uv, which the Makefile uses to resolve the build version on the host, so the job
-# resolves it with git-versioner itself and exports MICROPY_GIT_TAG/MICROPY_GIT_HASH; that needs
-# full history and tags.
+# image has no uv, which the Makefile uses to resolve the build version, so the job resolves it
+# with git-versioner itself and exports MICROPY_GIT_TAG/MICROPY_GIT_HASH; that needs full history
+# and tags.
 #
-# $SAST_IMAGE is not yet published to a registry a runner can pull from, so the job is manual and
-# allowed to fail: an unpullable image fails it visibly at job start rather than passing with no
-# artefact. It has been run locally inside the image, not yet on a real runner. Once the image is
-# published, drop `when` and `allow_failure`.
+# A merge request pipeline sets BASE to the merge request's diff base, which makes each job a
+# pull-request run: only the first-party translation units the diff reaches, at cppcheck's warning
+# severity and above. Every other pipeline is a full run: every unit at every severity, with MISRA
+# over the first-party units and GCC -fanalyzer over the ARM configurations. A job fails when a
+# tool is missing, a compilation database is empty or incomplete, or cppcheck reports a coverage
+# failure outside analysis/coverage-gaps.json.
+#
+# SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
+# comes from a CI/CD variable of the same name. There is no default; unset, every job fails first.
+#
+# Gap against GitHub: the results go no further than this job's artefacts. GitLab's Vulnerability
+# Report and its merge request approval policies read GitLab's own security report schema
+# (artifacts:reports:sast), not SARIF, and nothing here converts cppcheck's or GCC's SARIF to it.
+# So on GitLab a finding neither appears in the Vulnerability Report nor blocks a merge request,
+# and triage works from the SARIF artefacts. Closing that gap needs either a SARIF to GitLab report
+# converter, which would be SARIF rewriting of the programme's own, or GitLab Advanced SAST reading
+# the compilation database directly (below).
 
 stages:
-  - compile-db
+  - analyse
 
-compile-commands:
-  stage: compile-db
-  image: $SAST_IMAGE
-  when: manual
-  allow_failure: true
-  variables:
-    # Must equal pyproject.toml's [tool.degraves-sast] image; GitLab resolves `image:` before any
-    # script runs, so it cannot read it from there. The first script line fails the job on drift.
-    SAST_IMAGE: degraves-sast:2.21.0
-    GIT_DEPTH: 0
-    GIT_FETCH_EXTRA_FLAGS: --tags
-    GIT_SUBMODULE_STRATEGY: none
+variables:
+  GIT_DEPTH: 0
+  GIT_FETCH_EXTRA_FLAGS: --tags
+  GIT_SUBMODULE_STRATEGY: none
+  # The Makefile's own pins, restated so the tools cache key can name them.
+  CPPCHECK_VERSION: 2.22.0
+  ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+
+sast:
+  stage: analyse
+  image: micropython/build-micropython-arm
+  timeout: 3h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      variables:
+        BASE: $CI_MERGE_REQUEST_DIFF_BASE_SHA
+        # Pull-request runs do not run -fanalyzer, so they do not fetch its toolchain.
+        SAST_SKIP_ARM_GCC: "1"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  parallel:
+    matrix:
+      - SAST_CONFIGURATION:
+          - stm32-USB2CAN_NUCLEO_H563ZI
+          - stm32-USB2CAN_NUCLEO_H563ZI-mboot
+          - mimxrt-USB2CAN_SEEED_ARCH_MIX
+        SAST_FANALYZER: "1"
+      # No -fanalyzer for the host configurations: it needs a pinned GCC 15 host compiler, and
+      # the build image's host gcc is 12.2.
+      - SAST_CONFIGURATION:
+          - unix-standard
+          - mpy-cross
+        SAST_FANALYZER: ""
+  # cppcheck is built from source and the Arm toolchain is a large download, so both are cached,
+  # keyed on their versions.
+  cache:
+    key: sast-tools-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip$SAST_SKIP_ARM_GCC
+    paths:
+      - build/sast-tools/
   before_script:
+    - |
+      if [ -z "$SAST_TOOLS" ]; then
+        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...). Without it nothing can be analysed."
+        exit 1
+      fi
     - git config --global --add safe.directory '*'
-    - test "$(make -s sast-image)" = "$SAST_IMAGE" || { echo "SAST_IMAGE does not match pyproject.toml"; exit 1; }
-    - make submodules
     - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
     - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
     - export MICROPY_GIT_TAG MICROPY_GIT_HASH
   script:
-    - make compile-commands-mboot
-    - make compile-commands-unix
+    - make sast-tools
+    - make submodules
+    - make build-$SAST_CONFIGURATION
+    - make compile-commands-$SAST_CONFIGURATION
+    - make cppcheck-$SAST_CONFIGURATION
+    - make check-cppcheck-$SAST_CONFIGURATION
+    - if [ -z "$BASE" ] && [ -n "$SAST_FANALYZER" ]; then make fanalyzer-$SAST_CONFIGURATION; fi
+  # Only this job's configuration has a sast/ directory, so the globs name its files alone.
   artifacts:
+    when: always
+    expire_in: 4 weeks
     paths:
-      - src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/compile_commands.json
-      - src/micropython/ports/unix/build-standard/compile_commands.json
-    expire_in: 1 week
+      - src/**/sast/compile_commands.json
+      - src/**/sast/includes.json
+      - src/**/sast/pr/compile_commands.json
+      - src/**/sast/pr/scope.json
+      - src/**/sast/other/scope.json
+      - src/**/sast/misra/scope.json
+      - src/**/sast/cppcheck/*.sarif
+      - src/**/sast/fanalyzer/
 
-# When GitLab Advanced SAST is enabled for C/C++, it reads this artefact:
+# When GitLab Advanced SAST is enabled for C/C++, it reads a configuration's compilation database
+# from this job's artefacts, for example the bootloader's:
 #   variables:
 #     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
-#     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/compile_commands.json
-# SAST-04 wires that scan; this job establishes the verified database prerequisite.
+#     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/sast/compile_commands.json
+# That is a separate analyser writing GitLab's own report schema, and is not wired here.

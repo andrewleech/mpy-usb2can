@@ -9,7 +9,7 @@
     "omission is visible rather than assumed.",
     "",
     "frozen_output names the build's own generated frozen_content.c for a configuration. The resolver compares its resolved module set against what the build actually embedded, which is the only independent oracle available short of reimplementing the manifest DSL. libs-only has none: it is a variant of the firmware build and does not produce its own.",
-    "artefact_dir is where SAST-01 writes that configuration's compile_commands.json and includes.json, which is its own build directory, beside the firmware. A configuration with none produces no database of its own."
+    "artefact_dir is where the configuration's compile-commands target writes its compile_commands.json and includes.json: the sast/ subdirectory of its own build directory, beside the firmware. A configuration with none produces no database of its own."
   ],
   "configurations": [
     {
@@ -20,7 +20,7 @@
       "exclude_app": false,
       "reason": "The primary shipped firmware.",
       "frozen_output": "src/system/build-USB2CAN_NUCLEO_H563ZI/frozen_content.c",
-      "artefact_dir": "src/system/build-USB2CAN_NUCLEO_H563ZI"
+      "artefact_dir": "src/system/build-USB2CAN_NUCLEO_H563ZI/sast"
     },
     {
       "name": "stm32-USB2CAN_NUCLEO_H563ZI-libs-only",
@@ -39,7 +39,7 @@
       "exclude_app": false,
       "reason": "The second board, on a different port. Its first-party header is included by no other configuration, so omitting it would leave that header unanalysed.",
       "frozen_output": "src/system/build-USB2CAN_SEEED_ARCH_MIX/frozen_content.c",
-      "artefact_dir": "src/system/build-USB2CAN_SEEED_ARCH_MIX"
+      "artefact_dir": "src/system/build-USB2CAN_SEEED_ARCH_MIX/sast"
     },
     {
       "name": "unix-standard",
@@ -49,13 +49,17 @@
       "exclude_app": false,
       "reason": "platform_baremetal is false here, so it is the only configuration that freezes the test modules and the simulation package. It is also the execution vehicle for the CVE detection benchmark.",
       "frozen_output": "src/unix/build/frozen_content.c",
-      "artefact_dir": "src/micropython/ports/unix/build-standard"
+      "artefact_dir": "src/micropython/ports/unix/build-standard/sast"
     }
   ],
   "excluded": [
     {
       "name": "stm32-USB2CAN_NUCLEO_H563ZI-mboot",
       "reason": "The bootloader has its own compilation database because it compiles this repository's first-party C, but it freezes no Python and includes no manifest, so it has no manifest scope to resolve."
+    },
+    {
+      "name": "mpy-cross",
+      "reason": "The host-built bytecode compiler is analysed as its own configuration, with its own compilation database (make compile-commands-mpy-cross), because it builds py/ with every native emitter enabled, which no firmware configuration does. Like the bootloader it freezes no Python and includes no manifest, so it has no manifest scope to resolve."
     },
     {
       "name": "mimxrt-USB2CAN_SEEED_ARCH_MIX-libs-only",

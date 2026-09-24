@@ -3,3 +3,17 @@
 *.bin filter=lfs diff=lfs merge=lfs -text
 *.hex filter=lfs diff=lfs merge=lfs -text
 *.exe filter=lfs diff=lfs merge=lfs -text
+
+# Ownership for static analysis, in GitHub Linguist's attributes. Code inside a git submodule
+# (src/micropython, src/libs/*) is external by construction and needs no line here. A path marked
+# linguist-vendored is third-party code copied into this repository; there is none today. A path
+# marked linguist-generated is build output, whose findings are fixed in the generator or its
+# input, so they are reported and never gate. Everything else tracked here is first-party and
+# gates. A compiled path that is none of these, such as an untracked file outside the build
+# directories, fails the analysis rather than defaulting to a class.
+#
+# The build directories are ignored by git, so these lines only ever classify, never change how a
+# tracked file is diffed. The unix port's own build output sits inside src/micropython and is
+# external for that reason.
+src/system/build-*/** linguist-generated
+src/unix/build/** linguist-generated

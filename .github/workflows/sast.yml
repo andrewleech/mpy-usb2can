@@ -1,0 +1,227 @@
+name: SAST
+
+# C static analysis: cppcheck on every run, plus cppcheck's MISRA addon and GCC -fanalyzer on full
+# runs, over every agreed configuration. Each analysis job runs the Makefile's targets in the stock
+# build image, the same commands a developer runs locally (CLAUDE.md, Static analysis), and fails
+# when a tool is missing, a compilation database is empty or incomplete, or cppcheck reports a
+# coverage failure outside analysis/coverage-gaps.json. A job that analysed nothing never passes.
+#
+# Two kinds of run from one configuration:
+# - Pull request: BASE is the branch the pull request merges into, and each configuration analyses
+#   only the first-party translation units the diff reaches through their include sets, at
+#   cppcheck's warning severity and above, the ones that can gate.
+# - Full: every other trigger. Every translation unit at every severity, with MISRA over the
+#   first-party units and GCC -fanalyzer over the ARM configurations. Both are report-only.
+#
+# Nothing in this workflow decides whether a finding blocks a merge. The upload job sends each
+# configuration's SARIF to code scanning under its own category, cppcheck/<configuration> and
+# gcc-analyzer/<configuration>, and the repository ruleset's code scanning rule (required tool
+# Cppcheck, security alerts High or higher, other alerts None) fails a pull request on a new alert
+# at cppcheck's own security-severity of 8.5 or 9.9. Merge protection only acts on alerts whose
+# lines are all in the pull request's diff
+# (https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection), so findings
+# in submodule code are uploaded and visible but never block here, and findings in paths
+# .gitattributes marks vendored or generated are suppressed on pull-request runs. The ruleset is a
+# repository setting, not code; the gh api command that creates it is in CLAUDE.md.
+#
+# The analysis tools are not in this repository. `make sast-tools` installs them from SAST_TOOLS,
+# a pip requirement for the degraves-sast package, which comes from the repository variable of the
+# same name. There is no default: an unset variable fails every analysis job at its first step.
+
+on:
+  pull_request:
+  push:
+    branches: [main, sast]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sast-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CPPCHECK_VERSION: 2.22.0
+  ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+
+jobs:
+  analyse:
+    name: ${{ matrix.configuration }} (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    container: micropython/build-micropython-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration:
+          - stm32-USB2CAN_NUCLEO_H563ZI
+          - stm32-USB2CAN_NUCLEO_H563ZI-mboot
+          - mimxrt-USB2CAN_SEEED_ARCH_MIX
+          - unix-standard
+          - mpy-cross
+        # To split each pull-request run across N jobs, make the first list 0..N-1 and set
+        # SAST_SHARDS below to N. A full run is never split.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[0]') }}
+        include:
+          - configuration: stm32-USB2CAN_NUCLEO_H563ZI
+            build_dir: src/system/build-USB2CAN_NUCLEO_H563ZI
+            fanalyzer: true
+          - configuration: stm32-USB2CAN_NUCLEO_H563ZI-mboot
+            build_dir: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot
+            fanalyzer: true
+          - configuration: mimxrt-USB2CAN_SEEED_ARCH_MIX
+            build_dir: src/system/build-USB2CAN_SEEED_ARCH_MIX
+            fanalyzer: true
+          # No -fanalyzer for the host configurations: it needs a pinned GCC 15 host compiler,
+          # and the build image's host gcc is 12.2.
+          - configuration: unix-standard
+            build_dir: src/micropython/ports/unix/build-standard
+            fanalyzer: false
+          - configuration: mpy-cross
+            build_dir: src/micropython/mpy-cross/build
+            fanalyzer: false
+    env:
+      SAST_TOOLS: ${{ vars.SAST_TOOLS }}
+      # Read by the Makefile: set, it makes the run a pull-request run.
+      BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+      SAST_SHARDS: 1
+      SAST_SHARD: ${{ matrix.shard }}
+      # Pull-request runs do not run -fanalyzer, so they do not fetch its toolchain.
+      SAST_SKIP_ARM_GCC: ${{ github.event_name == 'pull_request' && '1' || '' }}
+    steps:
+      - name: Require the analysis tools declaration
+        run: |
+          if [ -z "$SAST_TOOLS" ]; then
+            echo "::error::The repository variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...). Without it nothing can be analysed."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The pull-request scope diffs against the merge base with BASE, and the build version
+          # comes from tags.
+          fetch-depth: 0
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      # cppcheck is built from source and the Arm toolchain is a large download, so both are
+      # cached, keyed on their versions. The cache is saved as soon as the tools are installed,
+      # so a later failing step does not discard it.
+      - name: Restore the analysis tools
+        id: tools-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: build/sast-tools
+          key: sast-tools-${{ runner.os }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.SAST_SKIP_ARM_GCC == '1' && 'none' || env.ARM_GCC_ANALYZER_VERSION }}
+      - name: Install the analysis tools
+        run: make sast-tools
+      - name: Save the analysis tools
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: build/sast-tools
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
+      - name: Fetch submodules
+        run: make submodules
+      - name: Build
+        run: make build-${{ matrix.configuration }}
+      - name: Compilation database
+        run: make compile-commands-${{ matrix.configuration }}
+      - name: cppcheck
+        run: make cppcheck-${{ matrix.configuration }}
+      - name: cppcheck coverage
+        run: make check-cppcheck-${{ matrix.configuration }}
+      - name: GCC -fanalyzer (report only)
+        if: env.BASE == '' && matrix.fanalyzer
+        run: make fanalyzer-${{ matrix.configuration }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: sast-${{ matrix.configuration }}-shard${{ matrix.shard }}
+          path: |
+            ${{ matrix.build_dir }}/sast/compile_commands.json
+            ${{ matrix.build_dir }}/sast/includes.json
+            ${{ matrix.build_dir }}/sast/pr/compile_commands.json
+            ${{ matrix.build_dir }}/sast/pr/scope.json
+            ${{ matrix.build_dir }}/sast/pr/suppressions.txt
+            ${{ matrix.build_dir }}/sast/other/scope.json
+            ${{ matrix.build_dir }}/sast/misra/scope.json
+            ${{ matrix.build_dir }}/sast/misra/suppressions.txt
+            ${{ matrix.build_dir }}/sast/cppcheck/*.sarif
+            ${{ matrix.build_dir }}/sast/fanalyzer/
+
+  # Code scanning takes one run per tool and category per upload, so each configuration's SARIF
+  # files, one per compiler-flag group, pass, shard and -fanalyzer unit, are merged per tool
+  # with SARIF Multitool first; the results themselves pass through unchanged. This job runs only
+  # when every analysis job passed: a partial upload would mark findings in the units that were
+  # not analysed as fixed. It is also the only job that can write security events.
+  upload:
+    name: Upload ${{ matrix.configuration }}
+    needs: analyse
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration:
+          - stm32-USB2CAN_NUCLEO_H563ZI
+          - stm32-USB2CAN_NUCLEO_H563ZI-mboot
+          - mimxrt-USB2CAN_SEEED_ARCH_MIX
+          - unix-standard
+          - mpy-cross
+        # The port whose own submodules the configuration's build fetched, as `make build-<cfg>`
+        # does through src/system; unix-standard and mpy-cross need none beyond make submodules.
+        include:
+          - configuration: stm32-USB2CAN_NUCLEO_H563ZI
+            port_submodules: PORT=stm32 BOARD=USB2CAN_NUCLEO_H563ZI
+          - configuration: stm32-USB2CAN_NUCLEO_H563ZI-mboot
+            port_submodules: PORT=stm32 BOARD=USB2CAN_NUCLEO_H563ZI
+          - configuration: mimxrt-USB2CAN_SEEED_ARCH_MIX
+            port_submodules: PORT=mimxrt BOARD=USB2CAN_SEEED_ARCH_MIX
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # upload-sarif computes each result's partialFingerprints from the file the result points
+      # at, which is how code scanning keeps tracking an alert when lines around it move. Most
+      # results are in submodule files (MicroPython and its libraries), so the job checks out the
+      # same submodules the analysis job had; without them those results get no fingerprints.
+      - name: Fetch the submodules the analysis read
+        run: |
+          make submodules
+          if [ -n "${{ matrix.port_submodules }}" ]; then
+            make -C src/system ${{ matrix.port_submodules }} submodules_
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sast-${{ matrix.configuration }}-shard*
+          path: sast-in
+      - name: Merge SARIF per tool
+        run: |
+          set -eu
+          mkdir -p sast-out
+          cppcheck=$(find sast-in -path '*/cppcheck/*.sarif' | sort)
+          if [ -z "$cppcheck" ]; then
+            echo "::error::No cppcheck SARIF for ${{ matrix.configuration }}."
+            exit 1
+          fi
+          npx --yes @microsoft/sarif-multitool@5.7.0 merge $cppcheck --merge-empty-logs \
+            --output-directory sast-out --output-file cppcheck.sarif --log ForceOverwrite
+          gcc=$(find sast-in -path '*/fanalyzer/*.sarif' | sort)
+          if [ -n "$gcc" ]; then
+            npx --yes @microsoft/sarif-multitool@5.7.0 merge $gcc --merge-empty-logs \
+              --output-directory sast-out --output-file gcc-analyzer.sarif --log ForceOverwrite
+          fi
+      - uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: sast-out/cppcheck.sarif
+          category: cppcheck/${{ matrix.configuration }}
+      - uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        if: hashFiles('sast-out/gcc-analyzer.sarif') != ''
+        with:
+          sarif_file: sast-out/gcc-analyzer.sarif
+          category: gcc-analyzer/${{ matrix.configuration }}

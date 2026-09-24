@@ -22,20 +22,23 @@ else
   UNIX_VARIANT_DIR =
 endif
 
-# Common Unix build options
-UNIX_OPTIONS=$(MAKE_OPTIONS) VARIANT=$(UNIX_VARIANT) \
+# Common Unix build options. The variables are kept apart from the job count so the compilation
+# database targets can replay the same make line serially.
+UNIX_MAKE_VARS = VARIANT=$(UNIX_VARIANT) \
   $(if $(UNIX_VARIANT_DIR),VARIANT_DIR=$(UNIX_VARIANT_DIR)) \
   MPY_LIB_DIR=$(MPY_LIB_DIR) \
   MICROPY_PY_FFI=0 \
   CWARN="-Wall -Wno-error=int-conversion -Wno-error=return-type" \
   CFLAGS_EXTRA="-DMICROPY_ENABLE_SCHEDULER=1 -DMICROPY_PY_UPLATFORM=1"
+UNIX_OPTIONS=$(MAKE_OPTIONS) $(UNIX_MAKE_VARS)
 
-# Common Firmware build options
-FW_OPTIONS=$(MAKE_OPTIONS) \
-  PORT=$(PORT) \
-  BOARD=$(BOARD) \
+# Common Firmware build options, as a function of port and board so that a configuration other
+# than the current PORT and BOARD gets the same variables. $(1) port, $(2) board.
+fw_make_vars = PORT=$(1) \
+  BOARD=$(2) \
   USE_MBOOT=1 \
   USER_C_MODULES=$(USER_C_MODULES)
+FW_OPTIONS=$(MAKE_OPTIONS) $(call fw_make_vars,$(PORT),$(BOARD))
 
 MPY_CROSS = $(MICROPYTHON_BASE)/mpy-cross/build/mpy-cross
 
@@ -90,6 +93,10 @@ help:
 	@echo "$(BOLD)$(PROJECT_NAME) Makefile$(RESET)"
 	@echo "Please use 'make $(BOLD)target$(RESET)' where $(BOLD)target$(RESET) is one of:"
 	@grep -h ':\s\+##' Makefile | column -t -s# | awk -F ":" '{ print "  $(BOLD)" $$1 "$(RESET)" $$2 }'
+	@echo ""
+	@echo "Static analysis per configuration, where <cfg> is one of:"
+	@echo "  $(SAST_CONFIGS)"
+	@sed -n 's/^#> /  /p' Makefile
 
 
 # Static analysis runs on the host; the toolchain image carries no python tooling.
@@ -272,264 +279,379 @@ tools/typings/VERSIONS:
 
 # --- Static analysis ----------------------------------------------------------------------------
 #
-# The analysers and their driver are not in this repository. They are provided by an image, the same
-# way the compiler is: micropython/build-micropython-arm supplies arm-none-eabi-gcc, and
-# $(SAST_IMAGE) supplies that toolchain plus cppcheck and the sast-* entry points these targets
-# call. Build it from the degraves SAST tree, or pull it, before running any of these.
+# The analysers are upstream releases and none of them is in this repository: cppcheck
+# $(CPPCHECK_VERSION) built unmodified from its release tag, GCC -fanalyzer from the Arm GNU Toolchain
+# $(ARM_GCC_ANALYZER_VERSION), and compiledb for the compilation databases. The degraves-sast
+# package adds only what no accepted tool does: compiler predefines for cppcheck, the database
+# completeness check, pull-request scope from the build's own dependency files, ownership from git
+# conventions, and the accepted coverage gaps check. `make sast-tools` installs all of it into
+# $(SAST_TOOLS_DIR), inside the same micropython/build-micropython-arm image that builds the
+# firmware, and every target below runs there, so the database's compiler and the analyser's
+# derived type model come from the same compiler.
 #
-# What this repository does hold is its own analysis policy, under analysis/: which of its paths are
-# first-party, which build configurations are agreed, which findings it has judged suppressible and
-# which coverage gaps it has accepted. Those describe this project and belong to it.
-# The image is declared once, in pyproject.toml's [tool.degraves-sast] table; CI jobs read it back
-# through `make -s sast-image`. SAST_IMAGE set on the command line or in the environment wins.
-ifeq ($(origin SAST_IMAGE),undefined)
-SAST_IMAGE := $(shell awk '/^\[/ { s = ($$0 == "[tool.degraves-sast]") } \
-  s && /^image *=/ { sub(/^image *= *"/, ""); sub(/".*/, ""); print }' $(PROJECT_BASE)/pyproject.toml)
-endif
+# SAST_TOOLS says where the package comes from, as a pip requirement: a path to a checkout of the
+# degraves SAST tree, or a VCS URL. It has no default because the package has no published
+# location yet, and a default pointing somewhere that does not exist would fail later and less
+# clearly.
+#
+# What this repository does hold is its own analysis policy. Ownership comes from git: code in a
+# submodule is external, .gitattributes marks what is vendored or generated, and everything else
+# tracked here is first-party. analysis/ holds the agreed configurations, the cppcheck
+# suppressions and the accepted coverage gaps.
+#
+# Results are the analysers' own SARIF. Nothing here passes or fails a finding: GitHub code
+# scanning merge protection does that, from the analyser's own security-severity (see
+# .github/workflows/sast.yml). These targets fail on a missing tool, an empty or incomplete
+# database, and a coverage failure outside analysis/coverage-gaps.json, because each of those makes
+# a clean result a property of the run rather than of the code.
 
-# Running a command in the analysis image, or directly when already inside it. The unprefixed form
-# is for use inside a shell conditional, where a leading @ would not be a recipe prefix.
-ifeq ($(RUN_IN_DOCKER), 1)
-SAST_RUN_Q = $(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(SAST_IMAGE)
-SAST_IMAGE_CHECK = sast-image-check
-else
-SAST_RUN_Q =
-SAST_IMAGE_CHECK =
-endif
-SAST_RUN = @$(SAST_RUN_Q)
+SAST_TOOLS_DIR ?= $(PROJECT_BASE)/build/sast-tools
+CPPCHECK_VERSION ?= 2.22.0
+ARM_GCC_ANALYZER_VERSION ?= 15.2.rel1
+JOBS ?= $(shell nproc)
 
-FW_BUILD = $(PROJECT_BASE)/src/system/build-$(BOARD)
-UNIX_BUILD = $(MICROPYTHON_BASE)/ports/unix/build-$(UNIX_VARIANT)
+CPPCHECK = $(SAST_TOOLS_DIR)/cppcheck/bin/cppcheck
+ARM_GCC_ANALYZER = $(SAST_TOOLS_DIR)/arm-gnu-toolchain-$(ARM_GCC_ANALYZER_VERSION)/bin/arm-none-eabi-gcc
+SAST_BIN = $(SAST_TOOLS_DIR)/python/bin
+SAST_ENV = PATH="$(SAST_BIN):$$PATH" PYTHONPATH="$(SAST_TOOLS_DIR)/python"
 ANALYSIS_POLICY = $(PROJECT_BASE)/analysis
+CPPCHECK_SUPPRESSIONS = $(ANALYSIS_POLICY)/cppcheck-suppressions.txt
 
-.PHONY: sast-image
-sast-image:  ## Print the analysis image this project declares
-	@echo $(SAST_IMAGE)
+# Setting BASE, the ref a pull request merges into, makes a run a pull-request run: only the
+# first-party translation units the diff reaches through their include sets, plus one includer of
+# each changed first-party header none of those includes, at the severities that can gate, split
+# into SAST_SHARDS parts of which this run takes part SAST_SHARD. Unset, a run is a full one: every
+# translation unit at every enabled severity, with MISRA over the first-party units.
+BASE ?=
+SAST_SHARDS ?= 1
+SAST_SHARD ?= 0
+CPPCHECK_ENABLE_FULL = warning,style,performance,portability
+CPPCHECK_ENABLE ?= $(if $(BASE),warning,$(CPPCHECK_ENABLE_FULL))
 
-.PHONY: sast-image-check
-sast-image-check:
+# The agreed configurations, named as in analysis/configurations.json. For each: its build
+# directory, the directory its make line runs from, that line's variables, the target that builds
+# it here, and any part of its build directory that is another configuration's.
+#
+# The database is compiledb over a dry run of that same make line, with the same variables as the
+# real build: a flag that differs from the build's is a database describing a different firmware.
+# Measured requirements (SAST-01 proving-cycle-compiledb): run from the directory whose make does
+# the compiling, never through make -C; -B, or a built tree lists only out-of-date units; -f, or
+# compiledb merges into the previous database; and MICROPY_MPYCROSS, or the dry run includes
+# mpy-cross's host compile of the same py/*.c files and those entries replace the target's. The job
+# count is left out so the dry run's output is not interleaved.
+SAST_CONFIGS = stm32-USB2CAN_NUCLEO_H563ZI stm32-USB2CAN_NUCLEO_H563ZI-mboot \
+  mimxrt-USB2CAN_SEEED_ARCH_MIX unix-standard mpy-cross
+
+SAST_BUILD_stm32-USB2CAN_NUCLEO_H563ZI = $(PROJECT_BASE)/src/system/build-USB2CAN_NUCLEO_H563ZI
+SAST_MAKEDIR_stm32-USB2CAN_NUCLEO_H563ZI = $(PROJECT_BASE)/src/system
+SAST_MAKEVARS_stm32-USB2CAN_NUCLEO_H563ZI = $(call fw_make_vars,stm32,USB2CAN_NUCLEO_H563ZI) \
+  MICROPY_MPYCROSS=$(MPY_CROSS)
+SAST_GOAL_stm32-USB2CAN_NUCLEO_H563ZI = system PORT=stm32 BOARD=USB2CAN_NUCLEO_H563ZI
+SAST_EXCLUDE_stm32-USB2CAN_NUCLEO_H563ZI = --exclude mboot
+
+# The bootloader freezes no Python, so its make line has no MICROPY_MPYCROSS to pass.
+SAST_BUILD_stm32-USB2CAN_NUCLEO_H563ZI-mboot = $(PROJECT_BASE)/src/system/build-USB2CAN_NUCLEO_H563ZI/mboot
+SAST_MAKEDIR_stm32-USB2CAN_NUCLEO_H563ZI-mboot = $(PROJECT_BASE)/src/system
+SAST_MAKEVARS_stm32-USB2CAN_NUCLEO_H563ZI-mboot = BOARD=USB2CAN_NUCLEO_H563ZI PORT=stm32 mboot
+SAST_GOAL_stm32-USB2CAN_NUCLEO_H563ZI-mboot = mboot PORT=stm32 BOARD=USB2CAN_NUCLEO_H563ZI
+
+SAST_BUILD_mimxrt-USB2CAN_SEEED_ARCH_MIX = $(PROJECT_BASE)/src/system/build-USB2CAN_SEEED_ARCH_MIX
+SAST_MAKEDIR_mimxrt-USB2CAN_SEEED_ARCH_MIX = $(PROJECT_BASE)/src/system
+SAST_MAKEVARS_mimxrt-USB2CAN_SEEED_ARCH_MIX = $(call fw_make_vars,mimxrt,USB2CAN_SEEED_ARCH_MIX) \
+  MICROPY_MPYCROSS=$(MPY_CROSS)
+SAST_GOAL_mimxrt-USB2CAN_SEEED_ARCH_MIX = system PORT=mimxrt BOARD=USB2CAN_SEEED_ARCH_MIX
+
+SAST_BUILD_unix-standard = $(MICROPYTHON_BASE)/ports/unix/build-standard
+SAST_MAKEDIR_unix-standard = $(MICROPYTHON_BASE)/ports/unix
+SAST_MAKEVARS_unix-standard = $(UNIX_MAKE_VARS) MICROPY_MPYCROSS=$(MPY_CROSS) all
+SAST_GOAL_unix-standard = unix-port
+
+SAST_BUILD_mpy-cross = $(MICROPYTHON_BASE)/mpy-cross/build
+SAST_MAKEDIR_mpy-cross = $(MICROPYTHON_BASE)/mpy-cross
+SAST_MAKEVARS_mpy-cross =
+SAST_GOAL_mpy-cross = mpy-cross
+
+# GCC -fanalyzer runs over the ARM configurations only, with the pinned Arm GNU Toolchain used for
+# analysis alone. The host configurations (unix-standard, mpy-cross) would need a pinned GCC 15
+# host compiler, and none exists here: the build container's host gcc is 12.2, which has neither
+# SARIF output nor -fdiagnostics-add-output.
+SAST_ARM_CONFIGS = stm32-USB2CAN_NUCLEO_H563ZI stm32-USB2CAN_NUCLEO_H563ZI-mboot \
+  mimxrt-USB2CAN_SEEED_ARCH_MIX
+
+# The configuration's analysis artefacts, beside the build they describe; make clean removes them
+# with it. Expanded in a recipe, where $* is the configuration.
+SAST_DIR = $(SAST_BUILD_$*)/sast
+
+# Running inside the build image. The degraves-sast checkout named by SAST_TOOLS is mounted too
+# when it is a local directory, since the image otherwise sees only this project. Variables set on
+# the command line or in the environment are passed through, because the image starts with neither.
 ifeq ($(RUN_IN_DOCKER), 1)
-	@docker image inspect $(SAST_IMAGE) >/dev/null 2>&1 || { \
-	  echo "The analysis image $(SAST_IMAGE) is not present."; \
-	  echo "It carries cppcheck and the sast-* tools; this repository does not."; \
-	  echo "Build it from the SAST tree: docker build -t $(SAST_IMAGE) -f images/cppcheck/Dockerfile ."; \
-	  exit 1; }
+SAST_PASS_VARS = SAST_TOOLS SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
+  SAST_SKIP_ARM_GCC JOBS BASE SAST_SHARDS SAST_SHARD CPPCHECK_ENABLE
+SAST_PASS = $(strip $(foreach v,$(SAST_PASS_VARS),\
+  $(if $(filter command line environment,$(origin $(v))),$(v)="$($(v))")))
+SAST_TOOLS_MOUNT = $(if $(wildcard $(SAST_TOOLS)/pyproject.toml),\
+  -v "$(abspath $(SAST_TOOLS)):$(abspath $(SAST_TOOLS))")
+SAST_DOCKER = @$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" $(SAST_TOOLS_MOUNT) \
+  -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(IMAGE) make $@ $(SAST_PASS)
 endif
+
+# A missing tool fails with the command that installs it, never as an analysis of nothing.
+define sast_require
+	@for t in $(1); do test -x "$$t" || { echo "$$t is missing."; \
+	  echo "Install the analysis tools first: make sast-tools SAST_TOOLS=<pip requirement for degraves-sast>"; \
+	  exit 1; }; done
+endef
+
+define sast_require_cppcheck
+	$(call sast_require,$(CPPCHECK))
+	@v="$$($(CPPCHECK) --version)"; test "$$v" = "Cppcheck $(CPPCHECK_VERSION)" || { \
+	  echo "$(CPPCHECK) is $$v, not the pinned Cppcheck $(CPPCHECK_VERSION)."; \
+	  echo "Run make sast-tools again."; exit 1; }
+endef
+
+define sast_require_file
+	@test -s $(1) || { echo "$(1) is missing. Run make compile-commands-$* first."; exit 1; }
+endef
+
+.PHONY: sast-tools
+sast-tools:  ## Install the pinned analysers and the degraves-sast tools, from SAST_TOOLS=<pip requirement>
+	@test -n "$(SAST_TOOLS)" || { \
+	  echo "SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package, for"; \
+	  echo "example a checkout of the degraves SAST tree: make sast-tools SAST_TOOLS=/path/to/sast"; \
+	  exit 1; }
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	@# --upgrade because pip --target leaves an existing install alone without it.
+	python3 -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade \
+	  --target $(SAST_TOOLS_DIR)/python "$(SAST_TOOLS)"
+	$(SAST_ENV) sast-install-tools --prefix $(SAST_TOOLS_DIR) --cppcheck $(CPPCHECK_VERSION) \
+	  $(if $(SAST_SKIP_ARM_GCC),--skip-arm-gcc,--arm-gcc $(ARM_GCC_ANALYZER_VERSION))
+endif
+
+# Help lists these per configuration; <cfg> is one of $(SAST_CONFIGS).
+#> build-<cfg>                   Build the configuration
+#> compile-commands-<cfg>        compile_commands.json and includes.json into <build dir>/sast, checked
+#> check-compile-commands-<cfg>  Fail if the database does not explain every object the build produced
+#> sast-pr-scope-<cfg>           List the units a pull request reaches, BASE=<ref it merges into>
+#> cppcheck-<cfg>                cppcheck full run with MISRA; with BASE=<ref>, the pull-request run
+#> check-cppcheck-<cfg>          Fail on a coverage failure outside analysis/coverage-gaps.json
+#> fanalyzer-<cfg>               GCC -fanalyzer, ARM configurations only
+SAST_TARGETS = build compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck
+.PHONY: $(foreach t,$(SAST_TARGETS),$(addprefix $(t)-,$(SAST_CONFIGS))) \
+  $(addprefix fanalyzer-,$(SAST_CONFIGS))
+
+$(addprefix build-,$(SAST_CONFIGS)): build-%:
+	$(MAKE) $(SAST_GOAL_$*)
 
 # --- Compilation database
 #
-# Records the real compiler invocation for every translation unit the build compiles, by interposing
-# a shim named for each toolchain binary through CROSS_COMPILE for the firmware builds and CC for
-# the unix port. Capture runs inside the image, because the database must describe the compiler the
-# firmware actually ships with, and because the shim lives there rather than here.
+# One entry per C translation unit the build compiles, from the build's own make line. The
+# completeness check then reconciles it against the object files the build produced, accounting
+# for assembly units from the build's own sources, since compiledb records C only; and it writes
+# each unit's header set from the build's dependency files, classifying every header by ownership
+# so an unclassifiable one fails here. Build the configuration first: the check needs its objects,
+# and the pull-request scope needs its dependency files.
 #
-# The artefacts are build output and live in the build directory beside the firmware they describe.
-# Nothing here deletes anything: make clean removes them with the rest of the build. The capture
-# records are named after the object file each one produces, so recompiling a translation unit
-# overwrites its record rather than adding a second, and an incremental build leaves the database
-# correct rather than partial. A database is only ever as complete as the build directory it sits
-# in, and the completeness check says so by reconciling the two.
-
-.PHONY: compile-commands
-compile-commands:  ## Generate compile_commands.json for the firmware build, into its build directory
-compile-commands: $(MPY_CROSS) $(SAST_IMAGE_CHECK)
+# MAKEFLAGS is cleared so nothing from this make's own command line, job server or dry-run flag
+# reaches the replayed make line.
+$(addprefix compile-commands-,$(SAST_CONFIGS)): compile-commands-%:
 ifeq ($(RUN_IN_DOCKER), 1)
-	$(SAST_RUN) make $@ BOARD=$(BOARD) PORT=$(PORT)
+	$(SAST_DOCKER)
 else
-	@echo "$(BOLD)Capturing compilation database for $(BOARD) on $(PORT)...$(RESET)"
-	sast-shim --prefix arm-none-eabi- $(FW_BUILD)/compile-commands/shim
-	CC_SHIM_CAPTURE=$(FW_BUILD)/compile-commands/capture \
-	  $(MAKE) -C src/system $(FW_OPTIONS) CROSS_COMPILE=$(FW_BUILD)/compile-commands/shim/arm-none-eabi-
-	sast-compdb \
-	  --capture $(FW_BUILD)/compile-commands/capture \
-	  --build-dir $(FW_BUILD) --exclude mboot --exclude compile-commands \
-	  --out $(FW_BUILD) --target-root $(PROJECT_BASE) \
-	  --policy $(ANALYSIS_POLICY)/ownership.json \
-	  --configuration $(PORT)-$(BOARD)
+	$(call sast_require,$(SAST_BIN)/compiledb $(SAST_BIN)/sast-compdb)
+	@test -d $(SAST_BUILD_$*) || { \
+	  echo "$(SAST_BUILD_$*) does not exist. Build the configuration first: make build-$*"; exit 1; }
+	@mkdir -p $(SAST_DIR)
+	cd $(SAST_MAKEDIR_$*) && MAKEFLAGS= $(SAST_ENV) \
+	  compiledb -f -n -o $(SAST_DIR)/compile_commands.json make -B $(SAST_MAKEVARS_$*)
+	@grep -q '"file"' $(SAST_DIR)/compile_commands.json || { \
+	  echo "$(SAST_DIR)/compile_commands.json has no entries: compiledb recorded nothing."; exit 1; }
+	$(SAST_ENV) sast-compdb --check-db $(SAST_DIR)/compile_commands.json \
+	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*) --root $(PROJECT_BASE) \
+	  --includes-out $(SAST_DIR)/includes.json --configuration $*
 endif
 
-.PHONY: compile-commands-mboot
-compile-commands-mboot:  ## Generate compile_commands.json for the bootloader build (stm32 only)
-# The bootloader is a separate build of overlapping sources under different flags, notably its own
-# MBOOT_VTOR and linker layout, so its translation units are not the firmware's. It is not the only
-# build compiling this repository's first-party C: the stm32 port sweeps the board directory with
-# $(wildcard $(BOARD_DIR)/*.c) in SRC_C, so board .c files enter the firmware build too.
-compile-commands-mboot: submodules $(SAST_IMAGE_CHECK)
-	@if [ "$(PORT)" != "stm32" ]; then echo "ERROR: mboot only available on stm32"; exit 1; fi
+$(addprefix check-compile-commands-,$(SAST_CONFIGS)): check-compile-commands-%:
 ifeq ($(RUN_IN_DOCKER), 1)
-	$(SAST_RUN) make $@ BOARD=$(BOARD) PORT=$(PORT)
+	$(SAST_DOCKER)
 else
-	@echo "$(BOLD)Capturing bootloader compilation database for $(BOARD)...$(RESET)"
-	sast-shim --prefix arm-none-eabi- $(FW_BUILD)/mboot/compile-commands/shim
-	CC_SHIM_CAPTURE=$(FW_BUILD)/mboot/compile-commands/capture \
-	  $(MAKE) -C src/system $(MAKE_OPTIONS) BOARD=$(BOARD) PORT=$(PORT) mboot \
-	    CROSS_COMPILE=$(FW_BUILD)/mboot/compile-commands/shim/arm-none-eabi-
-	sast-compdb \
-	  --capture $(FW_BUILD)/mboot/compile-commands/capture \
-	  --build-dir $(FW_BUILD)/mboot --exclude compile-commands \
-	  --out $(FW_BUILD)/mboot --target-root $(PROJECT_BASE) \
-	  --policy $(ANALYSIS_POLICY)/ownership.json \
-	  --configuration $(PORT)-$(BOARD)-mboot
+	$(call sast_require,$(SAST_BIN)/sast-compdb)
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	$(SAST_ENV) sast-compdb --check-db $(SAST_DIR)/compile_commands.json \
+	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*) --root $(PROJECT_BASE)
 endif
-
-.PHONY: compile-commands-unix
-compile-commands-unix:  ## Generate compile_commands.json for the unix port, into its build directory
-compile-commands-unix: $(MPY_CROSS) $(SAST_IMAGE_CHECK)
-ifeq ($(RUN_IN_DOCKER), 1)
-	$(SAST_RUN) make $@
-else
-	@echo "$(BOLD)Capturing compilation database for the unix port...$(RESET)"
-	sast-shim $(UNIX_BUILD)/compile-commands/shim
-	CC_SHIM_CAPTURE=$(UNIX_BUILD)/compile-commands/capture \
-	  $(MAKE) -C $(MICROPYTHON_BASE)/ports/unix $(UNIX_OPTIONS) \
-	    CC=$(UNIX_BUILD)/compile-commands/shim/gcc all
-	sast-compdb \
-	  --capture $(UNIX_BUILD)/compile-commands/capture \
-	  --build-dir $(UNIX_BUILD) --exclude compile-commands \
-	  --out $(UNIX_BUILD) --target-root $(PROJECT_BASE) \
-	  --policy $(ANALYSIS_POLICY)/ownership.json \
-	  --configuration unix-$(UNIX_VARIANT)
-endif
-
-.PHONY: check-compile-commands
-check-compile-commands:  ## Reconcile each generated database against the build output it describes
-check-compile-commands: $(SAST_IMAGE_CHECK)
-	$(SAST_RUN) sast-compdb --check-db $(FW_BUILD)/compile_commands.json --build-dir $(FW_BUILD)
-	@if [ -f $(FW_BUILD)/mboot/compile_commands.json ]; then \
-	  $(SAST_RUN_Q) sast-compdb --check-db $(FW_BUILD)/mboot/compile_commands.json --build-dir $(FW_BUILD)/mboot; \
-	else echo "no bootloader database for $(BOARD); skipping"; fi
-	@if [ -f $(UNIX_BUILD)/compile_commands.json ]; then \
-	  $(SAST_RUN_Q) sast-compdb --check-db $(UNIX_BUILD)/compile_commands.json --build-dir $(UNIX_BUILD); \
-	else echo "no unix port database; skipping"; fi
 
 # --- Analysis scope from the manifest chain
 #
 # The manifest chain is the authority for what is declared: frozen Python modules, and user C module
 # directories where the pin supports declaring them. The compilation database is the authority for
 # what is actually compiled. Neither supersedes the other, so the resolver cross-checks itself
-# against the database and reports disagreement rather than reconciling it silently.
-#
-# Run the compile-commands targets first. Without them the cross-check cannot run and the artefacts
-# are weaker; the resolver says so rather than producing them quietly.
+# against the database and reports disagreement rather than reconciling it silently. Ownership of
+# what it resolves comes from the same git conventions as the analysers'.
 SCOPE_DIR ?= $(PROJECT_BASE)/build/scope
 
-.PHONY: scope
+.PHONY: scope check-scope
 scope:  ## Resolve analysis scope from the manifest chain, for every agreed configuration
-scope: $(SAST_IMAGE_CHECK)
-	$(SAST_RUN) sast-scope --all $(ANALYSIS_POLICY)/configurations.json \
-	  --root $(PROJECT_BASE) --policy $(ANALYSIS_POLICY)/ownership.json --out $(SCOPE_DIR)
-
-.PHONY: check-scope
 check-scope:  ## Fail if the manifest chain declares anything the recorded scope does not cover
-check-scope: $(SAST_IMAGE_CHECK)
-	$(SAST_RUN) sast-scope --all $(ANALYSIS_POLICY)/configurations.json \
-	  --root $(PROJECT_BASE) --policy $(ANALYSIS_POLICY)/ownership.json --out $(SCOPE_DIR) --check
+scope check-scope:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-scope)
+	$(SAST_ENV) sast-scope --all $(ANALYSIS_POLICY)/configurations.json \
+	  --root $(PROJECT_BASE) --out $(SCOPE_DIR) $(if $(filter check-scope,$@),--check)
+endif
 
-# --- C static analysis
+# --- cppcheck
 #
-# The analyser reads the compilation database, so it sees the defines and include paths the build
-# used rather than inferring them. Artefacts land in <build dir>/cppcheck, beside the firmware they
-# describe, and are removed only by make clean. The cache under it is what makes a re-run after a
-# one-file edit quick.
-CPPCHECK_CHECK_LEVEL ?= normal
-CPPCHECK_SYSTEM_INCLUDES ?= none
-# "full" analyses the whole compilation database; "gate" restricts it to the ownership buckets
-# data/profiles.json marks outcome "gate" (currently the owned in-repo profiles), for a faster run
-# over the subset that can actually fail a build. sast-cppcheck stamps which one ran into
-# summary.json, so a gated run cannot be mistaken for a full one from the artefact alone.
-CPPCHECK_SCOPE ?= full
-
-# $(1) build directory holding compile_commands.json, $(2) configuration name, $(3) extra arguments
-define CPPCHECK_RUN
-	@test -f $(1)/compile_commands.json || { \
-	  echo "$(1)/compile_commands.json is missing. Run the matching compile-commands target first;"; \
-	  echo "the analyser takes its scope from the database rather than walking directories."; \
-	  exit 1; }
-	$(SAST_RUN) sast-cppcheck \
-	  --compile-commands $(1)/compile_commands.json \
-	  --root $(PROJECT_BASE) --out $(1)/cppcheck --configuration $(2) \
-	  --policy-dir $(ANALYSIS_POLICY) \
-	  --check-level $(CPPCHECK_CHECK_LEVEL) --system-includes $(CPPCHECK_SYSTEM_INCLUDES) \
-	  --scope $(CPPCHECK_SCOPE) $(3)
+# One cppcheck invocation per compiler-flag group of the database, each given the predefines and
+# platform file sast-cppcheck-inputs derives from that group's own compiler, since cppcheck cannot
+# take them from a cross compiler itself. Paths in the SARIF are repository-relative (-rp), because
+# code scanning drops absolute ones; for the same reason suppressions name repository-relative
+# paths, and the forced predefines header is suppressed that way, since under -rp an absolute
+# suppression path silently matches nothing.
+#
+# $(1) inputs directory, $(2) SARIF file stem, $(3) analysis cache stem, $(4) severities,
+# $(5) further arguments. A run that selected nothing still analyses an empty file, so the
+# configuration's category receives a valid SARIF from the tool itself rather than none.
+define cppcheck_groups
+	@set -e; n=0; \
+	for db in $(1)/compile_commands-*.json; do \
+	  test -e "$$db" || continue; \
+	  i=$${db##*/compile_commands-}; i=$${i%.json}; n=$$((n + 1)); \
+	  mkdir -p $(3)-$$i; \
+	  echo "cppcheck: $$db"; \
+	  $(CPPCHECK) --project=$$db --include=$(1)/predefines-$$i.h --platform=$(1)/platform-$$i.xml \
+	    --enable=$(4) --inline-suppr -rp=$(PROJECT_BASE) \
+	    --suppress="*:$(patsubst $(PROJECT_BASE)/%,%,$(1))/predefines-$$i.h" \
+	    --suppressions-list=$(CPPCHECK_SUPPRESSIONS) $(5) \
+	    --cppcheck-build-dir=$(3)-$$i -j$(JOBS) \
+	    --output-format=sarif --output-file=$(2)-$$i.sarif; \
+	done; \
+	if [ $$n -eq 0 ]; then \
+	  echo "cppcheck: no translation unit selected in $(1); analysing an empty file."; \
+	  : > $(1)/empty.c; \
+	  $(CPPCHECK) $(1)/empty.c -rp=$(PROJECT_BASE) \
+	    --output-format=sarif --output-file=$(2)-empty.sarif; \
+	fi
 endef
 
-.PHONY: cppcheck
-cppcheck:  ## Analyse the firmware configuration for the current BOARD and PORT
-cppcheck: $(SAST_IMAGE_CHECK)
-	$(call CPPCHECK_RUN,$(FW_BUILD),$(PORT)-$(BOARD),)
-
-.PHONY: cppcheck-mboot
-cppcheck-mboot:  ## Analyse the bootloader configuration (stm32 only)
-cppcheck-mboot: $(SAST_IMAGE_CHECK)
-	$(call CPPCHECK_RUN,$(FW_BUILD)/mboot,$(PORT)-$(BOARD)-mboot,)
-
-.PHONY: cppcheck-unix
-cppcheck-unix:  ## Analyse the unix port configuration
-cppcheck-unix: $(SAST_IMAGE_CHECK)
-	$(call CPPCHECK_RUN,$(UNIX_BUILD),unix-$(UNIX_VARIANT),)
-
-# Configuration coverage, not findings. It fails when a translation unit the database lists was
-# never analysed, or when one ended early at an #error or a parse failure, because either makes a
-# low finding count a property of the run rather than of the code.
-.PHONY: check-cppcheck
-check-cppcheck:  ## Fail if the analysis did not cover every translation unit in the database
-check-cppcheck: $(SAST_IMAGE_CHECK)
-	$(call CPPCHECK_RUN,$(FW_BUILD),$(PORT)-$(BOARD),--coverage-only)
-	@if [ -f $(FW_BUILD)/mboot/compile_commands.json ]; then \
-	  $(MAKE) --no-print-directory cppcheck-coverage-mboot; fi
-	@if [ -f $(UNIX_BUILD)/compile_commands.json ]; then \
-	  $(MAKE) --no-print-directory cppcheck-coverage-unix; fi
-
-.PHONY: cppcheck-coverage-mboot
-cppcheck-coverage-mboot:
-	$(call CPPCHECK_RUN,$(FW_BUILD)/mboot,$(PORT)-$(BOARD)-mboot,--coverage-only)
-
-.PHONY: cppcheck-coverage-unix
-cppcheck-coverage-unix:
-	$(call CPPCHECK_RUN,$(UNIX_BUILD),unix-$(UNIX_VARIANT),--coverage-only)
-
-# --- A second free tool: GCC's own -fanalyzer ------------------------------------------------
-#
-# No new procurement: arm-none-eabi-gcc already builds this firmware, and -fanalyzer is built into
-# GCC 10+, which the analysis image already carries as its base layer. This replays the exact
-# command line the compilation database recorded, per translation unit, so it is the same
-# compilation the firmware ships with rather than a second, independently-derived one.
-define FANALYZER_RUN
-	@test -f $(1)/compile_commands.json || { \
-	  echo "$(1)/compile_commands.json is missing. Run the matching compile-commands target first."; \
-	  exit 1; }
-	$(SAST_RUN) sast-fanalyzer \
-	  --compile-commands $(1)/compile_commands.json \
-	  --root $(PROJECT_BASE) --out $(1)/fanalyzer --configuration $(2) \
-	  --policy-dir $(ANALYSIS_POLICY)
+define sast_pr_scope
+	@test -n "$(BASE)" || { echo "BASE is not set: name the ref the pull request merges into, e.g. BASE=origin/main"; exit 1; }
+	@mkdir -p $(SAST_DIR)/pr
+	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
+	  --base $(BASE) --out $(SAST_DIR)/pr/compile_commands.json --report $(SAST_DIR)/pr/scope.json \
+	  --shards $(SAST_SHARDS) --shard $(SAST_SHARD)
 endef
 
-.PHONY: fanalyzer
-fanalyzer:  ## Analyse the firmware configuration for the current BOARD and PORT with GCC -fanalyzer
-fanalyzer: $(SAST_IMAGE_CHECK)
-	$(call FANALYZER_RUN,$(FW_BUILD),$(PORT)-$(BOARD))
+$(addprefix sast-pr-scope-,$(SAST_CONFIGS)): sast-pr-scope-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-pr-scope)
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	$(sast_pr_scope)
+endif
 
-.PHONY: fanalyzer-mboot
-fanalyzer-mboot:  ## Analyse the bootloader configuration (stm32 only) with GCC -fanalyzer
-fanalyzer-mboot: $(SAST_IMAGE_CHECK)
-	$(call FANALYZER_RUN,$(FW_BUILD)/mboot,$(PORT)-$(BOARD)-mboot)
+# A pull-request run analyses the selected units at CPPCHECK_ENABLE (warning by default, the
+# lowest severity cppcheck tags High) and suppresses results in vendored and generated paths, which
+# never gate. External results stay: code scanning gates only on lines the pull request changes,
+# which a submodule's never are.
+#
+# A full run is two passes over disjoint sets of units, so no unit is analysed twice and no result
+# is reported twice. Pass A takes every unit that is not first-party, without MISRA. Pass B takes
+# the first-party units with cppcheck's MISRA addon, and suppresses MISRA results outside
+# first-party paths, such as in the external headers those units include. Both run at the full set
+# of severities: the addon costs about four and a half times as much per unit, and cppcheck filters
+# addon results by severity, which MISRA's style results need the full set to get through. MISRA
+# results carry no security-severity, so they are reported and never gate. Both passes' SARIF
+# files are the configuration's cppcheck results.
+$(addprefix cppcheck-,$(SAST_CONFIGS)): cppcheck-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-pr-scope sast-ownership))
+	$(sast_require_cppcheck)
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	$(call sast_require_file,$(SAST_DIR)/includes.json)
+	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/other $(SAST_DIR)/misra $(SAST_DIR)/cppcheck/*.sarif
+	@mkdir -p $(SAST_DIR)/cppcheck
+ifneq ($(BASE),)
+	$(sast_pr_scope)
+	$(SAST_ENV) sast-ownership --root $(PROJECT_BASE) --db $(SAST_DIR)/compile_commands.json \
+	  --includes $(SAST_DIR)/includes.json --suppressions-out $(SAST_DIR)/pr/suppressions.txt \
+	  --suppress-id '*' --classes vendored,generated
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/pr/compile_commands.json $(SAST_DIR)/pr/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/pr/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/pr,$(CPPCHECK_ENABLE),--suppressions-list=$(SAST_DIR)/pr/suppressions.txt)
+else
+	@mkdir -p $(SAST_DIR)/other $(SAST_DIR)/misra
+	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
+	  --not-first-party --out $(SAST_DIR)/other/compile_commands.json \
+	  --report $(SAST_DIR)/other/scope.json
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/other/compile_commands.json $(SAST_DIR)/other/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/other/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/other,$(CPPCHECK_ENABLE),)
+	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
+	  --first-party-only --out $(SAST_DIR)/misra/compile_commands.json \
+	  --report $(SAST_DIR)/misra/scope.json
+	$(SAST_ENV) sast-ownership --root $(PROJECT_BASE) --db $(SAST_DIR)/compile_commands.json \
+	  --includes $(SAST_DIR)/includes.json --suppressions-out $(SAST_DIR)/misra/suppressions.txt \
+	  --suppress-id 'misra-c2012-*' --classes external,vendored,generated,system
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/misra/compile_commands.json $(SAST_DIR)/misra/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/misra/inputs,$(SAST_DIR)/cppcheck/misra,$(SAST_DIR)/cppcheck/cache/misra,$(CPPCHECK_ENABLE_FULL),--addon=misra --suppressions-list=$(SAST_DIR)/misra/suppressions.txt)
+endif
+endif
 
-.PHONY: fanalyzer-unix
-fanalyzer-unix:  ## Analyse the unix port configuration with GCC -fanalyzer
-fanalyzer-unix: $(SAST_IMAGE_CHECK)
-	$(call FANALYZER_RUN,$(UNIX_BUILD),unix-$(UNIX_VARIANT))
+# Configuration coverage, not findings. cppcheck's progress output does not show a unit was
+# analysed, so coverage is asserted from the results: no coverage-failure result outside the
+# accepted gaps. A full run also fails on an accepted gap that no longer occurs, so a gap fixed by
+# a tool upgrade is removed rather than left asserting a limitation that no longer exists.
+$(addprefix check-cppcheck-,$(SAST_CONFIGS)): check-cppcheck-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-cppcheck-coverage)
+	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
+	  --configuration $* $(if $(BASE),,--full) $(SAST_DIR)/cppcheck/*.sarif
+endif
 
-# Coverage here means every translation unit in the database completed the analyser without timing
-# out or crashing it; there is no separate cheap pass the way cppcheck has one, so this is the same
-# invocation as the targets above, not a lighter one.
-.PHONY: check-fanalyzer
-check-fanalyzer:  ## Fail if -fanalyzer did not complete over every translation unit in the database
-check-fanalyzer: $(SAST_IMAGE_CHECK)
-	$(call FANALYZER_RUN,$(FW_BUILD),$(PORT)-$(BOARD))
-	@if [ -f $(FW_BUILD)/mboot/compile_commands.json ]; then \
-	  $(MAKE) --no-print-directory fanalyzer-mboot; fi
-	@if [ -f $(UNIX_BUILD)/compile_commands.json ]; then \
-	  $(MAKE) --no-print-directory fanalyzer-unix; fi
+# --- GCC -fanalyzer
+#
+# The second analyser. Each database entry is replayed with the pinned GCC 15, which writes its
+# own SARIF to a named file per unit. Full runs only, and report-only until its findings are
+# triaged.
+$(addprefix fanalyzer-,$(SAST_ARM_CONFIGS)): fanalyzer-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-fanalyzer $(ARM_GCC_ANALYZER))
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	@rm -rf $(SAST_DIR)/fanalyzer
+	$(SAST_ENV) sast-fanalyzer --db $(SAST_DIR)/compile_commands.json --gcc $(ARM_GCC_ANALYZER) \
+	  --root $(PROJECT_BASE) --out $(SAST_DIR)/fanalyzer --jobs $(JOBS)
+endif
+
+$(addprefix fanalyzer-,$(filter-out $(SAST_ARM_CONFIGS),$(SAST_CONFIGS))): fanalyzer-%:
+	@echo "$* is a host configuration: -fanalyzer needs a pinned GCC 15 host compiler, which the build"; \
+	echo "image does not provide, so it runs over the ARM configurations only."; exit 1
+
+# The unsuffixed names are the firmware configuration for the current PORT and BOARD.
+SAST_FW = $(PORT)-$(BOARD)
+
+.PHONY: compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck fanalyzer
+compile-commands:  ## Generate the firmware configuration's compilation database (build it first)
+compile-commands: compile-commands-$(SAST_FW)
+check-compile-commands:  ## Reconcile the firmware configuration's database against its build output
+check-compile-commands: check-compile-commands-$(SAST_FW)
+sast-pr-scope:  ## List the firmware configuration's units a pull request reaches (BASE=<ref>)
+sast-pr-scope: sast-pr-scope-$(SAST_FW)
+cppcheck:  ## Analyse the firmware configuration with cppcheck (BASE=<ref> for a pull-request run)
+cppcheck: cppcheck-$(SAST_FW)
+check-cppcheck:  ## Fail on a coverage failure in the firmware configuration outside the accepted gaps
+check-cppcheck: check-cppcheck-$(SAST_FW)
+fanalyzer:  ## Analyse the firmware configuration with GCC -fanalyzer
+fanalyzer: fanalyzer-$(SAST_FW)
 
 
 .PHONY: clean
