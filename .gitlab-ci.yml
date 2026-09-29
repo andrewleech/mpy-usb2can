@@ -105,6 +105,36 @@ sast:
       - src/**/sast/cppcheck/*.sarif
       - src/**/sast/fanalyzer/
 
+# The licence and origin declarations of code copied into this repository (REUSE.toml), checked
+# with the REUSE tool, in a job of its own so a declaration problem does not fail the analysis.
+licences:
+  stage: analyse
+  image: $SAST_IMAGE
+  timeout: 30m
+  variables:
+    SAST_SKIP_ARM_GCC: "1"
+  cache:
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+    paths:
+      - build/sast-tools/
+    policy: pull
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  before_script:
+    - |
+      if [ -z "$SAST_TOOLS" ]; then
+        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
+        exit 1
+      fi
+    - git config --global --add safe.directory '*'
+  script:
+    - make sast-tools
+    - make check-reuse
+
 # When GitLab Advanced SAST is enabled for C/C++, it reads a configuration's compilation database
 # from this job's artefacts, for example the bootloader's:
 #   variables:

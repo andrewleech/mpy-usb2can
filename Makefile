@@ -513,6 +513,20 @@ else
 	  --root $(PROJECT_BASE) --out $(SCOPE_DIR) $(if $(filter check-scope,$@),--check)
 endif
 
+# --- Licence and origin of copied code
+#
+# Third-party code copied into this repository is first-party here and analysed and gated like the
+# rest. REUSE.toml declares its licence and origin, and the REUSE tool checks that every file has
+# licensing information and that every licence named has its text under LICENSES/.
+.PHONY: check-reuse
+check-reuse:  ## Check the licence declarations (REUSE.toml, LICENSES/) with the REUSE tool
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/reuse)
+	$(SAST_ENV) reuse --root $(PROJECT_BASE) lint
+endif
+
 # --- cppcheck
 #
 # One cppcheck invocation per compiler-flag group of the database, each given the predefines and
