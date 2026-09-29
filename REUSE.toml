@@ -6,10 +6,10 @@
 # licence and where it came from; the analysis does not read it. Code in a submodule is declared by
 # its own repository.
 #
-# The first annotation states LICENSE for every file. A file copied from elsewhere gets its own
-# annotation after it, which overrides it, carrying the upstream copyright and licence and the
-# origin in SPDX-FileComment. A licence other than MIT also needs its text under LICENSES/, which
-# the REUSE tool checks.
+# The first annotation states LICENSE for every file. A file copied or derived from elsewhere gets
+# its own annotation after it, which overrides it, carrying the upstream copyright and licence and
+# the origin in SPDX-FileComment. A licence other than MIT also needs its text under LICENSES/,
+# which the REUSE tool checks.
 
 version = 1
 
@@ -39,6 +39,13 @@ precedence = "override"
 SPDX-FileCopyrightText = "2013-2026 Damien P. George"
 SPDX-License-Identifier = "MIT"
 SPDX-FileComment = "Copied unmodified from MicroPython, https://github.com/micropython/micropython, ports/mimxrt/boards/SEEED_ARCH_MIX/pins.csv"
+
+[[annotations]]
+path = "tools/makeversionhdr.py"
+precedence = "override"
+SPDX-FileCopyrightText = ["2013-2026 Damien P. George", "2026 Andrew Leech"]
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Derived from MicroPython, https://github.com/micropython/micropython, py/makeversionhdr.py (an earlier revision, whose docstring it keeps), with local changes for git-versioner"
 
 [[annotations]]
 path = "src/integration-tests/tests/resources/mptools/pyboard.py"

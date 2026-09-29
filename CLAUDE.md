@@ -71,11 +71,9 @@ The exception is `make scope`, whose artefacts span configurations and go to `bu
 
 Every translation unit a configuration compiles is analysed, whoever owns it: this repository's
 code, the MicroPython submodule and its libraries, and the generated code in the build directory.
-Ownership decides only where a finding is fixed and whether it can gate. Assembly is not analysed:
-a `.S` unit in the database (mimxrt's startup and reset handler files) reaches cppcheck, which
-analyses C only and skips it without a result, and GCC's analyser does not examine assembly
-either. Python is not analysed yet: the frozen modules each configuration embeds, third-party ones
-included, are in scope, and the tool for them is not decided.
+Ownership decides only where a finding is fixed and whether it can gate. Assembly is the exception
+(Known limitations). Python is not analysed yet: the frozen modules each configuration embeds,
+third-party ones included, are in scope, and the tool for them is not decided.
 
 #### Ownership
 
@@ -119,9 +117,11 @@ full run. A full run analyses every unit of the configuration, whoever owns it, 
 The ARM configurations also run GCC `-fanalyzer`. `make misra-<cfg>` runs cppcheck's MISRA C:2012
 addon over every unit into `sast/report/`, report-only; CI runs it on full runs in a job of its own,
 because the addon makes it several times slower than the analysis that gates, and keeps its results
-as that job's artefact: MISRA over every unit runs to tens of thousands of results, and code
-scanning rejects a run of more than 25,000 and displays 5,000. Its coverage is asserted against `analysis/coverage-gaps.json` the same way as the full run's, so an aborted addon fails it. CI runs pull-request runs on pull requests and full runs on pushes to `main` and
-`sast`, weekly and on demand.
+as that job's artefact, kept 90 days: MISRA over every unit runs to tens of thousands of results,
+and code scanning rejects a run of more than 25,000 and displays 5,000. Its cppcheck coverage is
+asserted against `analysis/coverage-gaps.json` the same way as the full run's, so an aborted addon
+fails it; the addon's own incompleteness is not (Known limitations). CI runs pull-request runs on
+pull requests and full runs on pushes to `main` and `sast`, weekly and on demand.
 
 #### What gates
 
@@ -133,7 +133,8 @@ findings. Alerts already on the base branch do not block, and dismissing one rec
 Merge protection only acts on alerts whose lines are all in the pull request's diff, which is what
 keeps submodule and generated findings out of the gate: neither is ever in this repository's diff.
 MISRA and `-fanalyzer` results carry no security severity and never gate. MISRA results are in the
-`misra` CI job's artefact (`sast/report/`), not in code scanning.
+`misra` CI job's artefact (`sast/report/`), kept 90 days, not in code scanning, so none of them,
+first-party included, has a triage trail there.
 
 The ruleset is a repository setting. It is created once, by a repository admin:
 
@@ -180,8 +181,12 @@ not SARIF, so on GitLab the findings neither appear there nor block a merge requ
 - The ruleset above covers the default branch only; pull requests into other branches, `sast`
   included, are analysed and uploaded but not gated.
 - Assembly sources are compiled but not analysed: cppcheck reads C, and GCC `-fanalyzer` only
-  preprocesses and assembles them.
+  preprocesses and assembles them. mimxrt's two `.S` units are in its database, so they reach
+  cppcheck, which skips them without a result.
 - cppcheck's MISRA addon implements MISRA C:2012 partially; its results carry rule numbers only.
+- Where the MISRA addon could not check part of a unit it reports `misra-config` ("misra checking
+  is incomplete"), which is in the report but fails nothing. On 2026-09-30: firmware 14, mimxrt 34,
+  unix-standard 73, mpy-cross 2, bootloader 0.
 - `REUSE.toml` gives every file the repository's licence unless an annotation says otherwise, so
   copied code whose files carry no SPDX identifier is only declared if someone adds its
   annotation.

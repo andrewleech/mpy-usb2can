@@ -223,6 +223,8 @@ jobs:
         with:
           name: misra-${{ matrix.configuration }}
           path: ${{ matrix.build_dir }}/sast/report/*.sarif
+          # The only place MISRA results are kept, so the retention is stated, not inherited.
+          retention-days: 90
 
   # The licence and origin declarations of code copied into this repository (REUSE.toml), checked
   # with the REUSE tool. Separate from the analysis jobs so that a declaration problem does not

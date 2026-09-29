@@ -15,10 +15,11 @@
     "by a tool upgrade is removed rather than left asserting a limitation that no longer exists. A",
     "pull-request run analyses a subset of units and does not check staleness.",
     "",
-    "translation_units is informational only: it records the units the failure was measured to cost.",
-    "cppcheck's SARIF does not say which unit a result came from, so the check cannot hold an entry to",
-    "that set, and a failure that spreads to another unit through the same header and line still",
-    "matches.",
+    "translation_units is exact: the check fails on any unit the gap costs that the entry does not",
+    "list. A gap in a header is reached by every unit that includes it, and cppcheck abandons each such",
+    "unit whole, so an entry that matched on the location alone would accept a unit added later without",
+    "analysing any of it. cppcheck's SARIF reports the result once however many units hit it, so the",
+    "check reads the units from cppcheck's own build directories.",
     "",
     "This is not a suppression list. A suppression hides a finding about the code; an entry here",
     "records that the analyser could not read some of the code, which is the opposite claim and has",
@@ -88,7 +89,7 @@
       ],
       "tool": "Cppcheck 2.22.0",
       "added": "2026-09-30",
-      "reason": "The same declaration and the same cppcheck 2.22.0 failure as the stm32 port's systick.h entry, in the mimxrt port's copy of the header. Three units of the mimxrt port, among them main.c, are unanalysed.",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression: the same declaration and the same failure as the stm32 port's systick.h entry, in the mimxrt port's copy of the header. Three units of the mimxrt port, among them main.c, are unanalysed.",
       "configurations": [
         "mimxrt-USB2CAN_SEEED_ARCH_MIX"
       ]
@@ -117,7 +118,7 @@
       ],
       "tool": "Cppcheck 2.22.0",
       "added": "2026-09-30",
-      "reason": "The same cause as the sys_stdio_mphal.c entry: a static MP_DEFINE_CONST_OBJ_TYPE with MP_TYPE_FLAG_ITER_IS_STREAM, which cppcheck 2.22.0 cannot parse once its preprocessor has left the macro unexpanded. The ROM filesystem's file object unit is unanalysed. The stm32 firmware compiles the unit with MICROPY_VFS_ROM off, which removes the definition, so it has no gap there.",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression, with the same cause as the sys_stdio_mphal.c entry: a static MP_DEFINE_CONST_OBJ_TYPE with MP_TYPE_FLAG_ITER_IS_STREAM, which cppcheck 2.22.0 cannot parse once its preprocessor has left the macro unexpanded. The ROM filesystem's file object unit is unanalysed. The stm32 firmware compiles the unit with MICROPY_VFS_ROM off, which removes the definition, so it has no gap there.",
       "configurations": [
         "mimxrt-USB2CAN_SEEED_ARCH_MIX",
         "unix-standard"
