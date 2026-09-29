@@ -9,10 +9,10 @@
 #
 # A merge request pipeline sets BASE to the merge request's diff base, which makes each job a
 # pull-request run: only the first-party translation units the diff reaches, at cppcheck's warning
-# severity and above. Every other pipeline is a full run: every unit at every severity, with MISRA
-# over the first-party units and GCC -fanalyzer over the ARM configurations. A job fails when a
-# tool is missing, a compilation database is empty or incomplete, or cppcheck reports a coverage
-# failure outside analysis/coverage-gaps.json.
+# severity and above. Every other pipeline is a full run: every unit, whoever owns it, at every
+# severity, with MISRA and, on the ARM configurations, GCC -fanalyzer. A job fails when a tool is
+# missing, a compilation database is empty or incomplete, a compiled path fits no ownership class,
+# or cppcheck reports a coverage failure outside analysis/coverage-gaps.json.
 #
 # SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
 # comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
@@ -43,7 +43,7 @@ variables:
 sast:
   stage: analyse
   image: $SAST_IMAGE
-  timeout: 3h
+  timeout: 6h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       variables:
@@ -100,9 +100,9 @@ sast:
       - src/**/sast/includes.json
       - src/**/sast/pr/compile_commands.json
       - src/**/sast/pr/scope.json
-      - src/**/sast/other/scope.json
-      - src/**/sast/misra/scope.json
       - src/**/sast/cppcheck/*.sarif
+      - src/**/sast/cppcheck/run
+      - src/**/sast/report/*.sarif
       - src/**/sast/fanalyzer/
 
 # The licence and origin declarations of code copied into this repository (REUSE.toml), checked

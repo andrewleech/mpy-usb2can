@@ -17,9 +17,9 @@
 #
 # An entry without a reason is a finding hidden without evidence, and does not belong here.
 #
-# Code outside the first-party paths needs no entry. Findings in submodules, and in paths
-# .gitattributes marks vendored or generated, are uploaded but never gate, so suppressing them here
-# would only hide them from the people who triage them. A suppression is not a coverage gap either:
+# Code outside the first-party paths needs no entry. Findings in submodules and in the build
+# directory's generated code are uploaded but never gate, so suppressing them here would only hide
+# them from the people who triage them. A suppression is not a coverage gap either:
 # a unit the analyser could not read is recorded in coverage-gaps.json, which is the opposite claim.
 #
 # The list is empty. Nothing has been triaged as suppressible yet.

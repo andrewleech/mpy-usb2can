@@ -1,17 +1,23 @@
 name: SAST
 
 # C static analysis: cppcheck on every run, plus cppcheck's MISRA addon and GCC -fanalyzer on full
-# runs, over every agreed configuration. Each analysis job runs the Makefile's targets in the stock
-# build image, the same commands a developer runs locally (CLAUDE.md, Static analysis), and fails
-# when a tool is missing, a compilation database is empty or incomplete, or cppcheck reports a
-# coverage failure outside analysis/coverage-gaps.json. A job that analysed nothing never passes.
+# runs, over every agreed configuration. Each analysis job runs the Makefile's targets in the build
+# image, pinned by digest, the same commands a developer runs locally (CLAUDE.md, Static analysis),
+# and fails when a tool is missing, a compilation database is empty or incomplete, a compiled path
+# fits no ownership class, or cppcheck reports a coverage failure outside
+# analysis/coverage-gaps.json. A full run, or a pull-request run whose change reaches any
+# translation unit, never passes having analysed nothing; a pull-request run whose change reaches
+# none analyses an empty file, so its categories still receive a valid SARIF.
 #
 # Two kinds of run from one configuration:
 # - Pull request: BASE is the branch the pull request merges into, and each configuration analyses
 #   only the first-party translation units the diff reaches through their include sets, at
 #   cppcheck's warning severity and above, the ones that can gate.
-# - Full: every other trigger. Every translation unit at every severity, with MISRA over the
-#   first-party units and GCC -fanalyzer over the ARM configurations. Both are report-only.
+# - Full: every other trigger. Every translation unit, whoever owns it, at every severity, with
+#   MISRA and, on the ARM configurations, GCC -fanalyzer. Both are report-only. MISRA over every
+#   unit runs to tens of thousands of results, more than code scanning accepts in one run
+#   (25,000), so the MISRA results stay in the job's artefact (sast/report/) and the upload
+#   carries the rest.
 #
 # Nothing in this workflow decides whether a finding blocks a merge. The upload job sends each
 # configuration's SARIF to code scanning under its own category, cppcheck/<configuration> and
@@ -20,9 +26,9 @@ name: SAST
 # at cppcheck's own security-severity of 8.5 or 9.9. Merge protection only acts on alerts whose
 # lines are all in the pull request's diff
 # (https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection), so findings
-# in submodule code are uploaded and visible but never block here, and findings in paths
-# .gitattributes marks vendored or generated are suppressed on pull-request runs. The ruleset is a
-# repository setting, not code; the gh api command that creates it is in CLAUDE.md.
+# in submodule code and in the build directory's generated code are uploaded and visible but never
+# block here. The ruleset is a repository setting, not code; the gh api command that creates it is
+# in CLAUDE.md.
 #
 # The analysis tools are not in this repository. `make sast-tools` installs them from SAST_TOOLS,
 # a pip requirement for the degraves-sast package, which comes from the repository variable of the
@@ -59,7 +65,7 @@ jobs:
     name: ${{ matrix.configuration }} (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
-    timeout-minutes: 180
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -152,11 +158,9 @@ jobs:
             ${{ matrix.build_dir }}/sast/includes.json
             ${{ matrix.build_dir }}/sast/pr/compile_commands.json
             ${{ matrix.build_dir }}/sast/pr/scope.json
-            ${{ matrix.build_dir }}/sast/pr/suppressions.txt
-            ${{ matrix.build_dir }}/sast/other/scope.json
-            ${{ matrix.build_dir }}/sast/misra/scope.json
-            ${{ matrix.build_dir }}/sast/misra/suppressions.txt
             ${{ matrix.build_dir }}/sast/cppcheck/*.sarif
+            ${{ matrix.build_dir }}/sast/cppcheck/run
+            ${{ matrix.build_dir }}/sast/report/*.sarif
             ${{ matrix.build_dir }}/sast/fanalyzer/
 
   # The licence and origin declarations of code copied into this repository (REUSE.toml), checked

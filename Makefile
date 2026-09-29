@@ -283,14 +283,14 @@ tools/typings/VERSIONS:
 # --- Static analysis ----------------------------------------------------------------------------
 #
 # The analysers are upstream releases and none of them is in this repository: cppcheck
-# $(CPPCHECK_VERSION) built unmodified from its release tag, GCC -fanalyzer from the Arm GNU Toolchain
-# $(ARM_GCC_ANALYZER_VERSION), and compiledb for the compilation databases. The degraves-sast
-# package adds only what no accepted tool does: compiler predefines for cppcheck, the database
-# completeness check, pull-request scope from the build's own dependency files, ownership from git
-# conventions, and the accepted coverage gaps check. `make sast-tools` installs all of it into
-# $(SAST_TOOLS_DIR), inside the same micropython/build-micropython-arm image that builds the
-# firmware, and every target below runs there, so the database's compiler and the analyser's
-# derived type model come from the same compiler.
+# $(CPPCHECK_VERSION) built unmodified from its release archive, checked against a pinned SHA-256,
+# GCC -fanalyzer from the Arm GNU Toolchain $(ARM_GCC_ANALYZER_VERSION), compiledb for the
+# compilation databases, and the REUSE tool for the licence declarations. The degraves-sast package adds only what no accepted tool does: compiler
+# predefines for cppcheck, the database completeness check, pull-request scope from the build's own
+# dependency files, ownership from the repository's structure, and the accepted coverage gaps
+# check. `make sast-tools` installs all of it into $(SAST_TOOLS_DIR), inside the same pinned
+# $(IMAGE) that builds the firmware, and every target below runs there, so the database's compiler
+# and the analyser's derived type model come from the same compiler.
 #
 # SAST_TOOLS says where the package comes from, as a pip requirement: a path to a checkout of the
 # degraves SAST tree, or a VCS URL pinned to a commit (git+https://...@<40-hex commit>), so the
@@ -298,16 +298,19 @@ tools/typings/VERSIONS:
 # package has no published location yet, and a default pointing somewhere that does not exist
 # would fail later and less clearly.
 #
-# What this repository does hold is its own analysis policy. Ownership comes from git: code in a
-# submodule is external, .gitattributes marks what is vendored or generated, and everything else
-# tracked here is first-party. analysis/ holds the agreed configurations, the cppcheck
+# Every translation unit a configuration compiles is analysed, whoever owns it. Ownership, which
+# follows Zephyr's convention, decides only where a finding is fixed and whether it can gate: code
+# in a submodule is external, the configuration's build directory is generated, and everything
+# else tracked here is first-party, third-party code copied in included. REUSE.toml declares the
+# licence and origin of that copied code. analysis/ holds the agreed configurations, the cppcheck
 # suppressions and the accepted coverage gaps.
 #
 # Results are the analysers' own SARIF. Nothing here passes or fails a finding: GitHub code
 # scanning merge protection does that, from the analyser's own security-severity (see
 # .github/workflows/sast.yml). These targets fail on a missing tool, an empty or incomplete
-# database, and a coverage failure outside analysis/coverage-gaps.json, because each of those makes
-# a clean result a property of the run rather than of the code.
+# database, a path that fits no ownership class, and a coverage failure outside
+# analysis/coverage-gaps.json, because each of those makes a clean result a property of the run
+# rather than of the code.
 
 SAST_TOOLS_DIR ?= $(PROJECT_BASE)/build/sast-tools
 CPPCHECK_VERSION ?= 2.22.0
@@ -323,14 +326,14 @@ CPPCHECK_SUPPRESSIONS = $(ANALYSIS_POLICY)/cppcheck-suppressions.txt
 
 # Setting BASE, the ref a pull request merges into, makes a run a pull-request run: only the
 # first-party translation units the diff reaches through their include sets, plus one includer of
-# each changed first-party header none of those includes, at the severities that can gate, split
-# into SAST_SHARDS parts of which this run takes part SAST_SHARD. Unset, a run is a full one: every
-# translation unit at every enabled severity, with MISRA over the first-party units.
+# each changed first-party header none of those includes, at CPPCHECK_ENABLE, the severities that
+# can gate, split into SAST_SHARDS parts of which this run takes part SAST_SHARD. Unset, a run is a
+# full one: every translation unit at every severity, with MISRA.
 BASE ?=
 SAST_SHARDS ?= 1
 SAST_SHARD ?= 0
+CPPCHECK_ENABLE ?= warning
 CPPCHECK_ENABLE_FULL = warning,style,performance,portability
-CPPCHECK_ENABLE ?= $(if $(BASE),warning,$(CPPCHECK_ENABLE_FULL))
 
 # The agreed configurations, named as in analysis/configurations.json. For each: its build
 # directory, the directory its make line runs from, that line's variables, the target that builds
@@ -382,8 +385,8 @@ SAST_GOAL_mpy-cross = mpy-cross
 SAST_ARM_CONFIGS = stm32-USB2CAN_NUCLEO_H563ZI stm32-USB2CAN_NUCLEO_H563ZI-mboot \
   mimxrt-USB2CAN_SEEED_ARCH_MIX
 
-# The configuration's analysis artefacts, beside the build they describe; make clean removes them
-# with it. Expanded in a recipe, where $* is the configuration.
+# The configuration's analysis artefacts, beside the build they describe, so removing the build
+# directory removes them too. Expanded in a recipe, where $* is the configuration.
 SAST_DIR = $(SAST_BUILD_$*)/sast
 
 # Running inside the build image. The degraves-sast checkout named by SAST_TOOLS is mounted too
@@ -456,12 +459,13 @@ $(addprefix build-,$(SAST_CONFIGS)): build-%:
 
 # --- Compilation database
 #
-# One entry per C translation unit the build compiles, from the build's own make line. The
-# completeness check then reconciles it against the object files the build produced, accounting
-# for assembly units from the build's own sources, since compiledb records C only; and it writes
-# each unit's header set from the build's dependency files, classifying every header by ownership
-# so an unclassifiable one fails here. Build the configuration first: the check needs its objects,
-# and the pull-request scope needs its dependency files.
+# One entry per translation unit the build compiles with its C compiler, from the build's own make
+# line. The completeness check then reconciles it against the object files the build produced,
+# accounting for assembly the assembler compiles, which compiledb does not record, and for objects
+# a deleted source left behind; and it writes each unit's include set from the build's dependency
+# files, classifying every unit and every included file by ownership, so a path that fits no class
+# fails here. Build the configuration first: the check needs its objects, and the include sets
+# need its dependency files.
 #
 # MAKEFLAGS is cleared so nothing from this make's own command line, job server or dry-run flag
 # reaches the replayed make line.
@@ -565,8 +569,8 @@ define sast_pr_scope
 	@test -n "$(BASE)" || { echo "BASE is not set: name the ref the pull request merges into, e.g. BASE=origin/main"; exit 1; }
 	@mkdir -p $(SAST_DIR)/pr
 	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
-	  --base $(BASE) --out $(SAST_DIR)/pr/compile_commands.json --report $(SAST_DIR)/pr/scope.json \
-	  --shards $(SAST_SHARDS) --shard $(SAST_SHARD)
+	  --build-dir $(SAST_BUILD_$*) --base $(BASE) --out $(SAST_DIR)/pr/compile_commands.json \
+	  --report $(SAST_DIR)/pr/scope.json --shards $(SAST_SHARDS) --shard $(SAST_SHARD)
 endef
 
 $(addprefix sast-pr-scope-,$(SAST_CONFIGS)): sast-pr-scope-%:
@@ -579,64 +583,64 @@ else
 endif
 
 # A pull-request run analyses the selected units at CPPCHECK_ENABLE (warning by default, the
-# lowest severity cppcheck tags High) and suppresses results in vendored and generated paths, which
-# never gate. External results stay: code scanning gates only on lines the pull request changes,
-# which a submodule's never are.
+# lowest severity cppcheck tags High). A full run analyses every unit of the database, whoever owns
+# it, at every severity, in two invocations per group sharing one cppcheck build directory:
 #
-# A full run is two passes over disjoint sets of units, so no unit is analysed twice and no result
-# is reported twice. Pass A takes every unit that is not first-party, without MISRA. Pass B takes
-# the first-party units with cppcheck's MISRA addon, and suppresses MISRA results outside
-# first-party paths, such as in the external headers those units include. Both run at the full set
-# of severities: the addon costs about four and a half times as much per unit, and cppcheck filters
-# addon results by severity, which MISRA's style results need the full set to get through. MISRA
-# results carry no security-severity, so they are reported and never gate. Both passes' SARIF
-# files are the configuration's cppcheck results.
+#   report/   with cppcheck's MISRA addon, whose style results need the full set of severities to
+#             get through cppcheck's severity filter. The complete record, kept as a CI artefact:
+#             MISRA over every unit runs to tens of thousands of results, and code scanning rejects
+#             a run of more than 25,000 and displays 5,000.
+#   cppcheck/ the same analysis without the addon, answered from the build directory's cache, so
+#             it costs seconds. These are uploaded to code scanning.
+#
+# MISRA results carry no security-severity and never gate. Nothing is suppressed by ownership on
+# either run: results in submodule and build directory code are uploaded and stay visible, and they
+# cannot gate because merge protection acts only on lines a pull request changes, which those never
+# are.
+#
+# The run's kind is recorded beside its SARIF, so the coverage check judges the run that made the
+# SARIF rather than whatever BASE says when it is invoked.
 $(addprefix cppcheck-,$(SAST_CONFIGS)): cppcheck-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
-	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-pr-scope sast-ownership))
+	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-pr-scope))
 	$(sast_require_cppcheck)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
 	$(call sast_require_file,$(SAST_DIR)/includes.json)
-	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/other $(SAST_DIR)/misra $(SAST_DIR)/cppcheck/*.sarif
+	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/full $(SAST_DIR)/report $(SAST_DIR)/cppcheck/*.sarif \
+	  $(SAST_DIR)/cppcheck/run
 	@mkdir -p $(SAST_DIR)/cppcheck
 ifneq ($(BASE),)
 	$(sast_pr_scope)
-	$(SAST_ENV) sast-ownership --root $(PROJECT_BASE) --db $(SAST_DIR)/compile_commands.json \
-	  --includes $(SAST_DIR)/includes.json --suppressions-out $(SAST_DIR)/pr/suppressions.txt \
-	  --suppress-id '*' --classes vendored,generated
 	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/pr/compile_commands.json $(SAST_DIR)/pr/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/pr/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/pr,$(CPPCHECK_ENABLE),--suppressions-list=$(SAST_DIR)/pr/suppressions.txt)
+	$(call cppcheck_groups,$(SAST_DIR)/pr/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/pr,$(CPPCHECK_ENABLE),)
+	@echo pr > $(SAST_DIR)/cppcheck/run
 else
-	@mkdir -p $(SAST_DIR)/other $(SAST_DIR)/misra
-	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
-	  --not-first-party --out $(SAST_DIR)/other/compile_commands.json \
-	  --report $(SAST_DIR)/other/scope.json
-	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/other/compile_commands.json $(SAST_DIR)/other/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/other/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/other,$(CPPCHECK_ENABLE),)
-	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
-	  --first-party-only --out $(SAST_DIR)/misra/compile_commands.json \
-	  --report $(SAST_DIR)/misra/scope.json
-	$(SAST_ENV) sast-ownership --root $(PROJECT_BASE) --db $(SAST_DIR)/compile_commands.json \
-	  --includes $(SAST_DIR)/includes.json --suppressions-out $(SAST_DIR)/misra/suppressions.txt \
-	  --suppress-id 'misra-c2012-*' --classes external,vendored,generated,system
-	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/misra/compile_commands.json $(SAST_DIR)/misra/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/misra/inputs,$(SAST_DIR)/cppcheck/misra,$(SAST_DIR)/cppcheck/cache/misra,$(CPPCHECK_ENABLE_FULL),--addon=misra --suppressions-list=$(SAST_DIR)/misra/suppressions.txt)
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
+	@mkdir -p $(SAST_DIR)/report
+	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),--addon=misra)
+	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),)
+	@echo full > $(SAST_DIR)/cppcheck/run
 endif
 endif
 
 # Configuration coverage, not findings. cppcheck's progress output does not show a unit was
 # analysed, so coverage is asserted from the results: no coverage-failure result outside the
-# accepted gaps. A full run also fails on an accepted gap that no longer occurs, so a gap fixed by
-# a tool upgrade is removed rather than left asserting a limitation that no longer exists.
+# accepted gaps. After a full run it also fails on an accepted gap that no longer occurs, so a gap
+# fixed by a tool upgrade is removed rather than left asserting a limitation that no longer exists.
 $(addprefix check-cppcheck-,$(SAST_CONFIGS)): check-cppcheck-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
 	$(call sast_require,$(SAST_BIN)/sast-cppcheck-coverage)
+	@run="$$(cat $(SAST_DIR)/cppcheck/run 2>/dev/null)"; \
+	case "$$run" in full) full=--full;; pr) full=;; *) \
+	  echo "$(SAST_DIR)/cppcheck/run is missing, so no cppcheck run finished. Run make cppcheck-$* first."; \
+	  exit 1;; esac; \
+	echo "checking the $$run run's SARIF"; \
 	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* $(if $(BASE),,--full) $(SAST_DIR)/cppcheck/*.sarif
+	  --configuration $* $$full $(SAST_DIR)/cppcheck/*.sarif
 endif
 
 # --- GCC -fanalyzer
