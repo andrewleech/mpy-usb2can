@@ -103,6 +103,7 @@ sast:
       - src/**/sast/pr/scope.json
       - src/**/sast/cppcheck/*.sarif
       - src/**/sast/cppcheck/run
+      - src/**/sast/fanalyzer/
 
 # cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only, in a job
 # of its own because the addon makes it several times slower than the analysis above. Its results
@@ -126,8 +127,13 @@ misra:
           - mimxrt-USB2CAN_SEEED_ARCH_MIX
           - unix-standard
           - mpy-cross
+  # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain is only
+  # skipped, not removed.
   cache:
-    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip
+    fallback_keys:
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
     paths:
       - build/sast-tools/
     policy: pull
@@ -152,7 +158,6 @@ misra:
     expire_in: 4 weeks
     paths:
       - src/**/sast/report/*.sarif
-      - src/**/sast/fanalyzer/
 
 # The licence and origin declarations of code copied into this repository (REUSE.toml), checked
 # with the REUSE tool, in a job of its own so a declaration problem does not fail the analysis.
@@ -162,8 +167,13 @@ licences:
   timeout: 30m
   variables:
     SAST_SKIP_ARM_GCC: "1"
+  # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain is only
+  # skipped, not removed.
   cache:
-    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip
+    fallback_keys:
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
     paths:
       - build/sast-tools/
     policy: pull

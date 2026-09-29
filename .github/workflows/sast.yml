@@ -206,7 +206,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-none
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}
+          restore-keys: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-
       - name: Install the analysis tools
         run: make sast-tools
       - name: Fetch submodules
@@ -248,14 +249,15 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-none
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}
+          restore-keys: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-
       - name: Install the analysis tools
         run: make sast-tools
       - name: Check the licence declarations
         run: make check-reuse
 
   # Code scanning takes one run per tool and category per upload, so each configuration's SARIF
-  # files, one per compiler-flag group, pass, shard and -fanalyzer unit, are merged per tool
+  # files, one per compiler-flag group, shard and -fanalyzer unit, are merged per tool
   # with SARIF Multitool first; the results themselves pass through unchanged. This job runs only
   # when every analysis job passed: a partial upload would mark findings in the units that were
   # not analysed as fixed. It is also the only job that can write security events.

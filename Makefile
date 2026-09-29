@@ -328,7 +328,7 @@ CPPCHECK_SUPPRESSIONS = $(ANALYSIS_POLICY)/cppcheck-suppressions.txt
 # first-party translation units the diff reaches through their include sets, plus one includer of
 # each changed first-party header none of those includes, at CPPCHECK_ENABLE, the severities that
 # can gate, split into SAST_SHARDS parts of which this run takes part SAST_SHARD. Unset, a run is a
-# full one: every translation unit at every severity, with MISRA.
+# full one: every translation unit at every severity. MISRA is misra-<cfg>.
 BASE ?=
 SAST_SHARDS ?= 1
 SAST_SHARD ?= 0
@@ -621,18 +621,22 @@ endif
 # scanning, which rejects a run of more than 25,000 results and displays 5,000; MISRA over every
 # unit runs to tens of thousands. Its own target, and its own CI job, because the addon makes it
 # several times slower than the analysis that gates. It shares the full run's cppcheck build
-# directory, so after cppcheck-<cfg> only the addon's share of the work is left.
+# directory, so after cppcheck-<cfg> only the addon's share of the work is left. Its coverage is
+# asserted as the full run's is, which also fails the target when the addon aborts, since cppcheck
+# reports that as an internalError result and exits 0.
 $(addprefix misra-,$(SAST_CONFIGS)): misra-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
-	$(call sast_require,$(SAST_BIN)/sast-cppcheck-inputs)
+	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-cppcheck-coverage))
 	$(sast_require_cppcheck)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
 	@rm -rf $(SAST_DIR)/report
 	@mkdir -p $(SAST_DIR)/report
 	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
 	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),--addon=misra)
+	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
+	  --configuration $* --full $(SAST_DIR)/report/*.sarif
 endif
 
 # Configuration coverage, not findings. cppcheck's progress output does not show a unit was

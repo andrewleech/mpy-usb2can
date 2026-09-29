@@ -71,9 +71,11 @@ The exception is `make scope`, whose artefacts span configurations and go to `bu
 
 Every translation unit a configuration compiles is analysed, whoever owns it: this repository's
 code, the MicroPython submodule and its libraries, and the generated code in the build directory.
-Ownership decides only where a finding is fixed and whether it can gate. Python is not analysed
-yet: the frozen modules each configuration embeds, third-party ones included, are in scope, and the
-tool for them is not decided.
+Ownership decides only where a finding is fixed and whether it can gate. Assembly is not analysed:
+a `.S` unit in the database (mimxrt's startup and reset handler files) reaches cppcheck, which
+analyses C only and skips it without a result, and GCC's analyser does not examine assembly
+either. Python is not analysed yet: the frozen modules each configuration embeds, third-party ones
+included, are in scope, and the tool for them is not decided.
 
 #### Ownership
 
@@ -118,7 +120,7 @@ The ARM configurations also run GCC `-fanalyzer`. `make misra-<cfg>` runs cppche
 addon over every unit into `sast/report/`, report-only; CI runs it on full runs in a job of its own,
 because the addon makes it several times slower than the analysis that gates, and keeps its results
 as that job's artefact: MISRA over every unit runs to tens of thousands of results, and code
-scanning rejects a run of more than 25,000 and displays 5,000. CI runs pull-request runs on pull requests and full runs on pushes to `main` and
+scanning rejects a run of more than 25,000 and displays 5,000. Its coverage is asserted against `analysis/coverage-gaps.json` the same way as the full run's, so an aborted addon fails it. CI runs pull-request runs on pull requests and full runs on pushes to `main` and
 `sast`, weekly and on demand.
 
 #### What gates
