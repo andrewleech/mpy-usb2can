@@ -26,32 +26,20 @@
   ],
   "accepted": [
     {
-      "id": "syntaxError",
-      "file": "src/micropython/lib/tinyusb/src/common/tusb_mcu.h",
-      "line": 59,
-      "translation_units": [
-        "src/micropython/extmod/modmachine.c"
-      ],
-      "tool": "Cppcheck 2.21.0",
-      "added": "2026-09-14",
-      "reason": "cppcheck's preprocessor does not expand TU_ARGS_APPLY_3, whose name tinyusb forms by token pasting, when it is reached through this translation unit. The compiler expands it, and the other 42 translation units that include the same header preprocess normally, so it is specific to this unit's include path rather than to the header. One translation unit of 539 is unanalysed and the finding count for this configuration is understated by whatever it contains.",
-      "configurations": [
-        "stm32-USB2CAN_NUCLEO_H563ZI"
-      ]
-    },
-    {
       "id": "internalAstError",
       "file": "src/micropython/py/grammar.h",
       "line": 84,
       "translation_units": [
         "src/micropython/py/parse.c"
       ],
-      "tool": "Cppcheck 2.21.0",
+      "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
-      "reason": "Maximum AST depth exceeded. py/grammar.h is a table of nested DEF_RULE macros that expands into a single deeply nested initialiser, and cppcheck's parser has a depth limit the compiler does not. The parser, py/parse.c, is unanalysed.",
+      "reason": "Maximum AST depth exceeded. py/grammar.h is a table of nested DEF_RULE macros that expands into a single deeply nested initialiser, and cppcheck's parser has a depth limit the compiler does not. The parser, py/parse.c, is unanalysed in every configuration that compiles it.",
       "configurations": [
         "stm32-USB2CAN_NUCLEO_H563ZI",
-        "unix-standard"
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX",
+        "unix-standard",
+        "mpy-cross"
       ]
     },
     {
@@ -61,11 +49,77 @@
       "translation_units": [
         "src/micropython/py/vm.c"
       ],
-      "tool": "Cppcheck 2.21.0",
+      "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
-      "reason": "AST broken, binary operator '=' without two operands. vmentrytable.h builds a computed-goto dispatch table out of GCC label addresses, which cppcheck's parser does not model. The interpreter loop, py/vm.c, is unanalysed. This is the most significant of the three gaps: it is the core of the runtime and it is first-party to the MicroPython fork rather than vendored.",
+      "reason": "AST broken, binary operator '=' without two operands. vmentrytable.h builds a computed-goto dispatch table out of GCC label addresses, which cppcheck's parser does not model. The interpreter loop, py/vm.c, is unanalysed. This is the most significant of these gaps: it is the core of the runtime. vm.c includes the header only with MICROPY_OPT_COMPUTED_GOTO, which the mimxrt and mpy-cross configurations leave off, so they compile vm.c without this gap.",
       "configurations": [
         "stm32-USB2CAN_NUCLEO_H563ZI",
+        "unix-standard"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/ports/stm32/systick.h",
+      "line": 47,
+      "translation_units": [
+        "src/micropython/ports/stm32/dma.c",
+        "src/micropython/ports/stm32/factoryreset.c",
+        "src/micropython/ports/stm32/main.c",
+        "src/micropython/ports/stm32/mpnetworkport.c",
+        "src/micropython/ports/stm32/sdram.c",
+        "src/micropython/ports/stm32/storage.c",
+        "src/micropython/ports/stm32/systick.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression. The line declares an array of function pointers sized by POW2_CEIL, whose expansion holds a bitwise or; 2.22.0 fails on any such declaration, reduced to `typedef void (*f)(int); f t[1 | 1];`. The compiler accepts it. Every unit that includes the header is unanalysed: seven units of the stm32 port, among them main.c, dma.c and storage.c.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/ports/mimxrt/systick.h",
+      "line": 49,
+      "translation_units": [
+        "src/micropython/ports/mimxrt/main.c",
+        "src/micropython/ports/mimxrt/mpnetworkport.c",
+        "src/micropython/ports/mimxrt/systick.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "The same declaration and the same cppcheck 2.22.0 failure as the stm32 port's systick.h entry, in the mimxrt port's copy of the header. Three units of the mimxrt port, among them main.c, are unanalysed.",
+      "configurations": [
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/shared/runtime/sys_stdio_mphal.c",
+      "line": 155,
+      "translation_units": [
+        "src/micropython/shared/runtime/sys_stdio_mphal.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression. cppcheck's preprocessor leaves MP_DEFINE_CONST_OBJ_TYPE unexpanded: the macro selects its MP_DEFINE_CONST_OBJ_TYPE_NARGS_<n> variant by token pasting inside MP_DEFINE_CONST_OBJ_TYPE_EXPAND, and the selected name is not rescanned with the argument list that follows it, which GCC does. 2.21.0 and 2.22.0 both leave it unexpanded; 2.22.0 then fails to parse a static definition whose flags argument holds a binary operator, here MP_TYPE_FLAG_ITER_IS_STREAM, where 2.21.0 parsed it silently as a declaration. The unit, which defines the sys.stdin, stdout and stderr objects, is unanalysed.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/extmod/vfs_rom_file.c",
+      "line": 157,
+      "translation_units": [
+        "src/micropython/extmod/vfs_rom_file.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "The same cause as the sys_stdio_mphal.c entry: a static MP_DEFINE_CONST_OBJ_TYPE with MP_TYPE_FLAG_ITER_IS_STREAM, which cppcheck 2.22.0 cannot parse once its preprocessor has left the macro unexpanded. The ROM filesystem's file object unit is unanalysed. The stm32 firmware compiles the unit with MICROPY_VFS_ROM off, which removes the definition, so it has no gap there.",
+      "configurations": [
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX",
         "unix-standard"
       ]
     },
@@ -79,9 +133,9 @@
       "translation_units": [
         "src/micropython/lib/mbedtls/library/platform_util.c"
       ],
-      "tool": "Cppcheck 2.21.0",
+      "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
-      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One vendored translation unit is unanalysed. Giving cppcheck those headers is not the fix: on glibc it costs 299 of this configuration's 318 units, which is the measurement behind --system-includes=none."
+      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One unit of the mbedtls submodule is unanalysed. Giving cppcheck those headers is not the fix: on glibc it costs 299 of this configuration's 318 units, which is the measurement behind --system-includes=none."
     },
     {
       "id": "preprocessorErrorDirective",
@@ -93,9 +147,9 @@
       "translation_units": [
         "src/micropython/extmod/modselect.c"
       ],
-      "tool": "Cppcheck 2.21.0",
+      "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
-      "reason": "The file asserts that its own POLL constants match <poll.h>'s, which is not resolved. Same cause and same trade-off as the mbedtls entry. One translation unit of the MicroPython fork is unanalysed in this configuration; it is analysed in neither stm32 configuration because neither compiles it."
+      "reason": "The file asserts that its own POLL constants match <poll.h>'s, which is not resolved. Same cause and same trade-off as the mbedtls entry. One unit of the MicroPython submodule is unanalysed in this configuration. The stm32 and mimxrt configurations compile the unit without MICROPY_PY_SELECT_POSIX_OPTIMISATIONS, so the assertion is not reached there."
     }
   ]
 }
