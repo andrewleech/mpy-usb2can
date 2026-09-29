@@ -10,9 +10,10 @@
 # A merge request pipeline sets BASE to the merge request's diff base, which makes each job a
 # pull-request run: only the first-party translation units the diff reaches, at cppcheck's warning
 # severity and above. Every other pipeline is a full run: every unit, whoever owns it, at every
-# severity, with MISRA and, on the ARM configurations, GCC -fanalyzer. A job fails when a tool is
-# missing, a compilation database is empty or incomplete, a compiled path fits no ownership class,
-# or cppcheck reports a coverage failure outside analysis/coverage-gaps.json.
+# severity, with GCC -fanalyzer on the ARM configurations, and in the misra job cppcheck's MISRA
+# addon over every unit. A job fails when a tool is missing, a compilation database is empty or
+# incomplete, a compiled path fits no ownership class, or cppcheck reports a coverage failure
+# outside analysis/coverage-gaps.json.
 #
 # SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
 # comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
@@ -43,7 +44,7 @@ variables:
 sast:
   stage: analyse
   image: $SAST_IMAGE
-  timeout: 6h
+  timeout: 3h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       variables:
@@ -102,6 +103,54 @@ sast:
       - src/**/sast/pr/scope.json
       - src/**/sast/cppcheck/*.sarif
       - src/**/sast/cppcheck/run
+
+# cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only, in a job
+# of its own because the addon makes it several times slower than the analysis above. Its results
+# stay in its artefact.
+misra:
+  stage: analyse
+  image: $SAST_IMAGE
+  timeout: 6h
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  variables:
+    SAST_SKIP_ARM_GCC: "1"
+  parallel:
+    matrix:
+      - SAST_CONFIGURATION:
+          - stm32-USB2CAN_NUCLEO_H563ZI
+          - stm32-USB2CAN_NUCLEO_H563ZI-mboot
+          - mimxrt-USB2CAN_SEEED_ARCH_MIX
+          - unix-standard
+          - mpy-cross
+  cache:
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+    paths:
+      - build/sast-tools/
+    policy: pull
+  before_script:
+    - |
+      if [ -z "$SAST_TOOLS" ]; then
+        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
+        exit 1
+      fi
+    - git config --global --add safe.directory '*'
+    - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
+    - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
+    - export MICROPY_GIT_TAG MICROPY_GIT_HASH
+  script:
+    - make sast-tools
+    - make submodules
+    - make build-$SAST_CONFIGURATION
+    - make compile-commands-$SAST_CONFIGURATION
+    - make misra-$SAST_CONFIGURATION
+  artifacts:
+    when: always
+    expire_in: 4 weeks
+    paths:
       - src/**/sast/report/*.sarif
       - src/**/sast/fanalyzer/
 

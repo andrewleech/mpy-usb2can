@@ -447,10 +447,12 @@ endif
 #> compile-commands-<cfg>        compile_commands.json and includes.json into <build dir>/sast, checked
 #> check-compile-commands-<cfg>  Fail if the database does not explain every object the build produced
 #> sast-pr-scope-<cfg>           List the units a pull request reaches, BASE=<ref it merges into>
-#> cppcheck-<cfg>                cppcheck full run with MISRA; with BASE=<ref>, the pull-request run
+#> cppcheck-<cfg>                cppcheck full run; with BASE=<ref>, the pull-request run
 #> check-cppcheck-<cfg>          Fail on a coverage failure outside analysis/coverage-gaps.json
+#> misra-<cfg>                   cppcheck's MISRA addon over every unit, report only, into <build dir>/sast/report
 #> fanalyzer-<cfg>               GCC -fanalyzer, ARM configurations only
-SAST_TARGETS = build compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck
+SAST_TARGETS = build compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck \
+  misra
 .PHONY: $(foreach t,$(SAST_TARGETS),$(addprefix $(t)-,$(SAST_CONFIGS))) \
   $(addprefix fanalyzer-,$(SAST_CONFIGS))
 
@@ -584,19 +586,9 @@ endif
 
 # A pull-request run analyses the selected units at CPPCHECK_ENABLE (warning by default, the
 # lowest severity cppcheck tags High). A full run analyses every unit of the database, whoever owns
-# it, at every severity, in two invocations per group sharing one cppcheck build directory:
-#
-#   report/   with cppcheck's MISRA addon, whose style results need the full set of severities to
-#             get through cppcheck's severity filter. The complete record, kept as a CI artefact:
-#             MISRA over every unit runs to tens of thousands of results, and code scanning rejects
-#             a run of more than 25,000 and displays 5,000.
-#   cppcheck/ the same analysis without the addon, answered from the build directory's cache, so
-#             it costs seconds. These are uploaded to code scanning.
-#
-# MISRA results carry no security-severity and never gate. Nothing is suppressed by ownership on
-# either run: results in submodule and build directory code are uploaded and stay visible, and they
-# cannot gate because merge protection acts only on lines a pull request changes, which those never
-# are.
+# it, at every severity. Nothing is suppressed by ownership on either run: results in submodule and
+# build directory code are uploaded and stay visible, and they cannot gate because merge protection
+# acts only on lines a pull request changes, which those never are.
 #
 # The run's kind is recorded beside its SARIF, so the coverage check judges the run that made the
 # SARIF rather than whatever BASE says when it is invoked.
@@ -608,8 +600,7 @@ else
 	$(sast_require_cppcheck)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
 	$(call sast_require_file,$(SAST_DIR)/includes.json)
-	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/full $(SAST_DIR)/report $(SAST_DIR)/cppcheck/*.sarif \
-	  $(SAST_DIR)/cppcheck/run
+	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/full $(SAST_DIR)/cppcheck/*.sarif $(SAST_DIR)/cppcheck/run
 	@mkdir -p $(SAST_DIR)/cppcheck
 ifneq ($(BASE),)
 	$(sast_pr_scope)
@@ -618,11 +609,30 @@ ifneq ($(BASE),)
 	@echo pr > $(SAST_DIR)/cppcheck/run
 else
 	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
-	@mkdir -p $(SAST_DIR)/report
-	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),--addon=misra)
 	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),)
 	@echo full > $(SAST_DIR)/cppcheck/run
 endif
+endif
+
+# MISRA over every unit of the database, whoever owns it, with cppcheck's MISRA addon at every
+# severity, since cppcheck filters addon results by severity and MISRA's style results need the
+# full set to get through. Report-only: the results carry no security-severity and never gate, and
+# they stay in the configuration's report/ directory, a CI artefact, rather than going to code
+# scanning, which rejects a run of more than 25,000 results and displays 5,000; MISRA over every
+# unit runs to tens of thousands. Its own target, and its own CI job, because the addon makes it
+# several times slower than the analysis that gates. It shares the full run's cppcheck build
+# directory, so after cppcheck-<cfg> only the addon's share of the work is left.
+$(addprefix misra-,$(SAST_CONFIGS)): misra-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-cppcheck-inputs)
+	$(sast_require_cppcheck)
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	@rm -rf $(SAST_DIR)/report
+	@mkdir -p $(SAST_DIR)/report
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),--addon=misra)
 endif
 
 # Configuration coverage, not findings. cppcheck's progress output does not show a unit was
@@ -666,7 +676,8 @@ $(addprefix fanalyzer-,$(filter-out $(SAST_ARM_CONFIGS),$(SAST_CONFIGS))): fanal
 # The unsuffixed names are the firmware configuration for the current PORT and BOARD.
 SAST_FW = $(PORT)-$(BOARD)
 
-.PHONY: compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck fanalyzer
+.PHONY: compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck misra \
+  fanalyzer
 compile-commands:  ## Generate the firmware configuration's compilation database (build it first)
 compile-commands: compile-commands-$(SAST_FW)
 check-compile-commands:  ## Reconcile the firmware configuration's database against its build output
@@ -677,6 +688,8 @@ cppcheck:  ## Analyse the firmware configuration with cppcheck (BASE=<ref> for a
 cppcheck: cppcheck-$(SAST_FW)
 check-cppcheck:  ## Fail on a coverage failure in the firmware configuration outside the accepted gaps
 check-cppcheck: check-cppcheck-$(SAST_FW)
+misra:  ## MISRA over the firmware configuration's every unit, report only
+misra: misra-$(SAST_FW)
 fanalyzer:  ## Analyse the firmware configuration with GCC -fanalyzer
 fanalyzer: fanalyzer-$(SAST_FW)
 

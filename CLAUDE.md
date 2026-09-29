@@ -39,9 +39,10 @@ make sast-tools SAST_TOOLS=/path/to/sast   # install the analysers once, into bu
 make build-<cfg>                    # build the configuration
 make compile-commands-<cfg>         # compilation database and include sets, checked against the build
 make check-compile-commands-<cfg>   # re-run that completeness check alone
-make cppcheck-<cfg>                 # full run: every unit, every severity, with MISRA
+make cppcheck-<cfg>                 # full run: every unit, every severity
 make cppcheck-<cfg> BASE=origin/main   # pull-request run: the units a diff against BASE reaches
 make check-cppcheck-<cfg>           # fail on a coverage failure outside analysis/coverage-gaps.json
+make misra-<cfg>                    # MISRA over every unit, report only, into sast/report/
 make fanalyzer-<cfg>                # GCC -fanalyzer, ARM configurations only
 make check-reuse                    # licence and origin declarations, with the REUSE tool
 make scope                          # resolve analysis scope from the manifest chain
@@ -112,11 +113,12 @@ A pull-request run (`BASE` set) analyses the first-party translation units the d
 through their include sets, plus one unit that includes each changed first-party header none of
 those does, at cppcheck's `warning` severity and above. A change to a board header reaches almost
 every unit, because the port's configuration includes it, so such a pull request costs about a
-full run. A full run analyses every unit of the configuration, whoever owns it, at every severity
-and with cppcheck's MISRA C:2012 addon, writing the complete results to `sast/report/`. It then
-writes the same results without MISRA to `sast/cppcheck/`, from cppcheck's cache in seconds, for
-upload: MISRA over every unit runs to tens of thousands of results, and code scanning rejects a run
-of more than 25,000 and displays 5,000. The ARM configurations also run GCC `-fanalyzer`. CI runs pull-request runs on pull requests and full runs on pushes to `main` and
+full run. A full run analyses every unit of the configuration, whoever owns it, at every severity.
+The ARM configurations also run GCC `-fanalyzer`. `make misra-<cfg>` runs cppcheck's MISRA C:2012
+addon over every unit into `sast/report/`, report-only; CI runs it on full runs in a job of its own,
+because the addon makes it several times slower than the analysis that gates, and keeps its results
+as that job's artefact: MISRA over every unit runs to tens of thousands of results, and code
+scanning rejects a run of more than 25,000 and displays 5,000. CI runs pull-request runs on pull requests and full runs on pushes to `main` and
 `sast`, weekly and on demand.
 
 #### What gates
@@ -129,7 +131,7 @@ findings. Alerts already on the base branch do not block, and dismissing one rec
 Merge protection only acts on alerts whose lines are all in the pull request's diff, which is what
 keeps submodule and generated findings out of the gate: neither is ever in this repository's diff.
 MISRA and `-fanalyzer` results carry no security severity and never gate. MISRA results are in the
-CI job's artefact (`sast/report/`), not in code scanning.
+`misra` CI job's artefact (`sast/report/`), not in code scanning.
 
 The ruleset is a repository setting. It is created once, by a repository admin:
 
