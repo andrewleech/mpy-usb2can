@@ -1,5 +1,6 @@
 # C static analysis, the same Make targets as .github/workflows/sast.yml and a local run
-# (CLAUDE.md, Static analysis), per agreed configuration, in the stock MicroPython build image.
+# (CLAUDE.md, Static analysis), per agreed configuration, in the MicroPython build image pinned by
+# digest, the same image as the Makefile's IMAGE.
 # /.dockerenv inside it makes the Makefile run each target directly rather than wrapping it in a
 # nested `docker run`, so the job needs no docker access and works on any docker executor. The
 # image has no uv, which the Makefile uses to resolve the build version, so the job resolves it
@@ -14,7 +15,8 @@
 # failure outside analysis/coverage-gaps.json.
 #
 # SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
-# comes from a CI/CD variable of the same name. There is no default; unset, every job fails first.
+# comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
+# is no default; unset, every job fails first.
 #
 # Gap against GitHub: the results go no further than this job's artefacts. GitLab's Vulnerability
 # Report and its merge request approval policies read GitLab's own security report schema
@@ -31,13 +33,16 @@ variables:
   GIT_DEPTH: 0
   GIT_FETCH_EXTRA_FLAGS: --tags
   GIT_SUBMODULE_STRATEGY: none
-  # The Makefile's own pins, restated so the tools cache key can name them.
+  # The Makefile's own pins, restated so the tools cache key can name them. The image is pinned by
+  # digest and is part of the key, because cppcheck is built in and for it.
   CPPCHECK_VERSION: 2.22.0
   ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+  SAST_IMAGE: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
+  IMAGE_DIGEST: sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 
 sast:
   stage: analyse
-  image: micropython/build-micropython-arm
+  image: $SAST_IMAGE
   timeout: 3h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -63,9 +68,9 @@ sast:
           - mpy-cross
         SAST_FANALYZER: ""
   # cppcheck is built from source and the Arm toolchain is a large download, so both are cached,
-  # keyed on their versions.
+  # keyed on their versions and the image.
   cache:
-    key: sast-tools-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip$SAST_SKIP_ARM_GCC
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip$SAST_SKIP_ARM_GCC
     paths:
       - build/sast-tools/
   before_script:

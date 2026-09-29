@@ -26,7 +26,13 @@ name: SAST
 #
 # The analysis tools are not in this repository. `make sast-tools` installs them from SAST_TOOLS,
 # a pip requirement for the degraves-sast package, which comes from the repository variable of the
-# same name. There is no default: an unset variable fails every analysis job at its first step.
+# same name, a local path or a VCS URL pinned to a commit. There is no default: an unset variable
+# fails every analysis job at its first step.
+#
+# The container is pinned by digest, the same image as the Makefile's IMAGE and .gitlab-ci.yml, and
+# the digest is part of the tools cache key, because cppcheck is built in and for that image and the
+# analysis derives its predefines from that image's compilers. A job's container cannot read the
+# workflow's env, so the digest is written out in each job; change them together.
 
 on:
   pull_request:
@@ -46,12 +52,13 @@ concurrency:
 env:
   CPPCHECK_VERSION: 2.22.0
   ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+  IMAGE_DIGEST: sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 
 jobs:
   analyse:
     name: ${{ matrix.configuration }} (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    container: micropython/build-micropython-arm
+    container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -107,14 +114,14 @@ jobs:
         run: git config --global --add safe.directory '*'
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       # cppcheck is built from source and the Arm toolchain is a large download, so both are
-      # cached, keyed on their versions. The cache is saved as soon as the tools are installed,
-      # so a later failing step does not discard it.
+      # cached, keyed on their versions and the image they were built in. The cache is saved as
+      # soon as the tools are installed, so a later failing step does not discard it.
       - name: Restore the analysis tools
         id: tools-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.SAST_SKIP_ARM_GCC == '1' && 'none' || env.ARM_GCC_ANALYZER_VERSION }}
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.SAST_SKIP_ARM_GCC == '1' && 'none' || env.ARM_GCC_ANALYZER_VERSION }}
       - name: Install the analysis tools
         run: make sast-tools
       - name: Save the analysis tools

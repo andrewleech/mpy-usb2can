@@ -176,9 +176,10 @@ make checks              # pre-commit: ruff, mypy, yamllint
 ## Build Environment
 
 Builds run inside `micropython/build-micropython-arm`, the official MicroPython ARM toolchain
-container and the image mpbuild selects for the stm32 port. The Makefile sets
-`RUN_IN_DOCKER=0` when `/.dockerenv` exists or `CI` is set, so the same targets work inside a
-container and in GitHub Actions. Override the image with `make IMAGE=... system`.
+container and the image mpbuild selects for the stm32 port, pinned by digest in the Makefile's
+`IMAGE` and in the CI configurations. The Makefile sets `RUN_IN_DOCKER=0` when `/.dockerenv`
+exists or `CI` is set, so the same targets work inside a container and in GitHub Actions. Override
+the image with `make IMAGE=... system`.
 
 **mpbuild does not currently drive this project.** It mounts only the MicroPython repository
 root into the build container and discovers boards by globbing

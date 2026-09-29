@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  # Toolchain image mpbuild selects for the stm32 port.
-  BUILD_IMAGE: micropython/build-micropython-arm
+  # Toolchain image mpbuild selects for the stm32 port, pinned by digest like the Makefile's IMAGE.
+  BUILD_IMAGE: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 
 jobs:
   checks:
@@ -26,7 +26,7 @@ jobs:
   test:
     name: Unit and integration tests
     runs-on: ubuntu-latest
-    container: micropython/build-micropython-arm
+    container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +51,7 @@ jobs:
   build:
     name: Firmware
     runs-on: ubuntu-latest
-    container: micropython/build-micropython-arm
+    container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     steps:
       - uses: actions/checkout@v4
         with:

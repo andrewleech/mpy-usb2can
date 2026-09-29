@@ -72,7 +72,10 @@ else
 RUN_IN_DOCKER=1
 # Official MicroPython ARM toolchain container; this is the image mpbuild
 # selects for the stm32 port (see BUILD_CONTAINERS in mpbuild/build.py).
-IMAGE ?= micropython/build-micropython-arm
+# Pinned by digest, the same one .github/workflows/*.yml and .gitlab-ci.yml
+# run in: the static analysis derives its predefines and type model from this
+# image's compilers, so a moving tag would move the analysis with it.
+IMAGE ?= micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 # Filter environment variables to avoid polluting build with host-specific vars
 DOCKER_ENV_FILTER = env -i HOME="$$HOME" USER="$$USER" PATH="$$PATH" TERM="$$TERM" SHELL="$$SHELL" \
   MICROPY_GIT_TAG="$(MICROPY_GIT_TAG)" MICROPY_GIT_HASH="$(MICROPY_GIT_HASH)"
@@ -290,9 +293,10 @@ tools/typings/VERSIONS:
 # derived type model come from the same compiler.
 #
 # SAST_TOOLS says where the package comes from, as a pip requirement: a path to a checkout of the
-# degraves SAST tree, or a VCS URL. It has no default because the package has no published
-# location yet, and a default pointing somewhere that does not exist would fail later and less
-# clearly.
+# degraves SAST tree, or a VCS URL pinned to a commit (git+https://...@<40-hex commit>), so the
+# tools cannot change between two runs of the same commit here. It has no default because the
+# package has no published location yet, and a default pointing somewhere that does not exist
+# would fail later and less clearly.
 #
 # What this repository does hold is its own analysis policy. Ownership comes from git: code in a
 # submodule is external, .gitattributes marks what is vendored or generated, and everything else
@@ -420,6 +424,11 @@ sast-tools:  ## Install the pinned analysers and the degraves-sast tools, from S
 	  echo "SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package, for"; \
 	  echo "example a checkout of the degraves SAST tree: make sast-tools SAST_TOOLS=/path/to/sast"; \
 	  exit 1; }
+	@case "$(SAST_TOOLS)" in *://*) \
+	  echo "$(SAST_TOOLS)" | grep -Eq '@[0-9a-f]{40}(#.*)?$$' || { \
+	    echo "SAST_TOOLS=$(SAST_TOOLS) names no commit, so the tools could differ between two runs."; \
+	    echo "Pin it to a full commit hash: git+https://host/sast.git@<40-hex commit>"; exit 1; };; \
+	esac
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
