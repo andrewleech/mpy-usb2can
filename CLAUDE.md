@@ -88,8 +88,10 @@ convention:
 | System | Outside this repository and included by a unit, such as the compiler's own headers | Uploaded and visible; never gate |
 
 Anything else fails the run rather than falling into a class: a compiled or included file that is
-untracked, outside every submodule and outside the build directory; a translation unit outside the
-repository; or a build directory that holds a tracked file. No file in the tree, `.gitattributes`
+untracked, outside every submodule and outside the build directory; a file inside the build
+directory only through a link out of it; a translation unit outside the repository; or a build
+directory that holds a tracked file, is or contains the repository, or resolves through a link to
+one that does. No file in the tree, `.gitattributes`
 included, changes a class. Today the first-party C is
 `src/system/USB2CAN_NUCLEO_H563ZI/mboot_footer.c` and the board headers.
 

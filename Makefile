@@ -636,7 +636,8 @@ else
 	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
 	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/misra,$(CPPCHECK_ENABLE_FULL),--addon=misra)
 	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* --full --cache-stem $(SAST_DIR)/cppcheck/cache/misra \
+	  --configuration $* --full --inputs $(SAST_DIR)/full/inputs \
+	  --cache-stem $(SAST_DIR)/cppcheck/cache/misra \
 	  --root $(PROJECT_BASE) $(SAST_DIR)/report/*.sarif
 endif
 
@@ -644,8 +645,8 @@ endif
 # analysed, so coverage is asserted from the results: no coverage-failure result outside the
 # accepted gaps. After a full run it also fails on an accepted gap that no longer occurs, so a gap
 # fixed by a tool upgrade is removed rather than left asserting a limitation that no longer exists.
-# An accepted gap accepts only the units it lists, which the run's cppcheck build directories
-# attribute, so a new unit reaching a known gap fails rather than going unanalysed.
+# An accepted gap accepts only the units it lists, which the build directories of the run's own
+# groups attribute, so a new unit reaching a known gap fails rather than going unanalysed.
 $(addprefix check-cppcheck-,$(SAST_CONFIGS)): check-cppcheck-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
@@ -657,7 +658,8 @@ else
 	  exit 1;; esac; \
 	echo "checking the $$run run's SARIF"; \
 	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* $$full --cache-stem $(SAST_DIR)/cppcheck/cache/$$run \
+	  --configuration $* $$full --inputs $(SAST_DIR)/$$run/inputs \
+	  --cache-stem $(SAST_DIR)/cppcheck/cache/$$run \
 	  --root $(PROJECT_BASE) $(SAST_DIR)/cppcheck/*.sarif
 endif
 
