@@ -28,7 +28,14 @@
     "",
     "This is not a suppression list. A suppression hides a finding about the code; an entry here",
     "records that the analyser could not read some of the code, which is the opposite claim and has",
-    "to stay visible in every summary."
+    "to stay visible in every summary.",
+    "",
+    "codechecker holds CodeChecker's gaps, with the same fields and meaning, checked by",
+    "make check-codechecker-<configuration> from CodeChecker's own record of the run",
+    "(codechecker/reports/metadata.json and its failed/ zips). The Clang Static Analyzer analyses only",
+    "what clang compiles, so a unit clang rejects is a failed unit; an entry matches it on id",
+    "(clangsa, the analyzer), and the repository-relative file and line of the first error clang",
+    "reported, and accepts only the translation_units it lists. accepted holds cppcheck's gaps."
   ],
   "accepted": [
     {
@@ -156,6 +163,36 @@
       "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
       "reason": "The file asserts that its own POLL constants match <poll.h>'s, which is not resolved. Same cause and same measured trade-off as the mbedtls entry. One unit of the MicroPython submodule is unanalysed in this configuration. The stm32 and mimxrt configurations compile the unit without MICROPY_PY_SELECT_POSIX_OPTIMISATIONS, so the assertion is not reached there."
+    }
+  ],
+  "codechecker": [
+    {
+      "id": "clangsa",
+      "file": "src/micropython/ports/stm32/mboot/main.c",
+      "line": 1475,
+      "translation_units": [
+        "src/micropython/ports/stm32/mboot/main.c"
+      ],
+      "tool": "CodeChecker 6.25.1, clang 20.1.8",
+      "added": "2026-10-01",
+      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_application() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the bootloader's main.c, which holds the whole of mboot's control flow,; cppcheck and GCC -fanalyzer do.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI-mboot"
+      ]
+    },
+    {
+      "id": "clangsa",
+      "file": "src/micropython/ports/stm32/powerctrl.c",
+      "line": 135,
+      "translation_units": [
+        "src/micropython/ports/stm32/powerctrl.c"
+      ],
+      "tool": "CodeChecker 6.25.1, clang 20.1.8",
+      "added": "2026-10-01",
+      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_bootloader() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the stm32 port's power control unit; cppcheck and GCC -fanalyzer do.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI"
+      ]
     }
   ]
 }

@@ -1,30 +1,37 @@
 name: SAST
 
-# C static analysis: cppcheck on every run, plus cppcheck's MISRA addon and GCC -fanalyzer on full
-# runs, over every agreed configuration. Each analysis job runs the Makefile's targets in the build
-# image, pinned by digest, the same commands a developer runs locally (CLAUDE.md, Static analysis),
-# and fails when a tool is missing, a compilation database is empty or incomplete, a compiled path
-# fits no ownership class, or cppcheck reports a coverage failure outside
-# analysis/coverage-gaps.json. A full run, or a pull-request run whose change reaches any
-# translation unit, never passes having analysed nothing; a pull-request run whose change reaches
-# none analyses an empty file, so its categories still receive a valid SARIF.
+# C static analysis: cppcheck and CodeChecker's Clang Static Analyzer on every run, plus cppcheck's
+# MISRA addon and GCC -fanalyzer on full runs, over every agreed configuration. Each analysis job
+# runs the Makefile's targets in the build image, pinned by digest, the same commands a developer
+# runs locally (CLAUDE.md, Static analysis), and fails when a tool is missing, a compilation
+# database is empty or incomplete, a compiled path fits no ownership class, or cppcheck or
+# CodeChecker could not analyse a unit outside analysis/coverage-gaps.json. A full run, or a
+# pull-request run whose change reaches any translation unit, never passes having analysed
+# nothing; a pull-request run whose change reaches none analyses an empty file with cppcheck and an
+# empty database with CodeChecker, so its categories still receive a valid SARIF.
 #
 # Two kinds of run from one configuration:
 # - Pull request: BASE is the branch the pull request merges into, and each configuration analyses
 #   only the first-party translation units the diff reaches through their include sets, at
-#   cppcheck's warning severity and above, the ones that can gate.
+#   cppcheck's warning severity and above, the ones that can gate, and with CodeChecker's one
+#   checker selection.
 # - Full: every other trigger. Every translation unit, whoever owns it, at every severity, with
 #   GCC -fanalyzer on the ARM configurations, and in a separate job cppcheck's MISRA addon over
 #   every unit. Both are report-only. MISRA over every unit runs to tens of thousands of results,
 #   more than code scanning accepts in one run (25,000), so its results stay in that job's
 #   artefact, and the upload does not wait for it.
 #
+# CodeChecker runs the Clang Static Analyzer at the releases GitLab Advanced SAST's C/C++ job runs
+# (CodeChecker 6.25.1, clang 20.1.8) with that job's default checkers, so its results are what that
+# job would report for the same database.
+#
 # Nothing in this workflow decides whether a finding blocks a merge. The upload job sends each
-# configuration's SARIF to code scanning under its own category, cppcheck/<configuration> and
-# gcc-analyzer/<configuration>, and the repository ruleset's code scanning rule (required tool
-# Cppcheck, security alerts High or higher, other alerts None) fails a pull request on a new alert
-# at cppcheck's own security-severity of 8.5 or 9.9. Merge protection only acts on alerts whose
-# lines are all in the pull request's diff
+# configuration's SARIF to code scanning under its own category, cppcheck/<configuration>,
+# codechecker/<configuration> and gcc-analyzer/<configuration>, and the repository ruleset's code
+# scanning rule (required tool Cppcheck, security alerts High or higher, other alerts None) fails a
+# pull request on a new alert at cppcheck's own security-severity of 8.5 or 9.9. CodeChecker's
+# SARIF carries no security-severity, so its alerts are not security alerts and do not gate.
+# Merge protection only acts on alerts whose lines are all in the pull request's diff
 # (https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection), so findings
 # in submodule code and in the build directory's generated code are uploaded and visible but never
 # block here. The ruleset is a repository setting, not code; the gh api command that creates it is
@@ -38,7 +45,8 @@ name: SAST
 # The container is pinned by digest, the same image as the Makefile's IMAGE and .gitlab-ci.yml, and
 # the digest is part of the tools cache key, because cppcheck is built in and for that image and the
 # analysis derives its predefines from that image's compilers. A job's container cannot read the
-# workflow's env, so the digest is written out in each job; change them together.
+# workflow's env, so the digest is written out in each job; change them together. The analysers'
+# versions, the Makefile's own pins restated, are in the key too.
 
 on:
   pull_request:
@@ -58,6 +66,8 @@ concurrency:
 env:
   CPPCHECK_VERSION: 2.22.0
   ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+  CODECHECKER_VERSION: 6.25.1
+  LLVM_VERSION: 20.1.8
   IMAGE_DIGEST: sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 
 jobs:
@@ -66,6 +76,11 @@ jobs:
     runs-on: ubuntu-latest
     container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     timeout-minutes: 180
+    # Where the container saw the checkout. CodeChecker's SARIF names files by absolute path, and
+    # the upload job, which runs on the runner rather than in the container, relativises them
+    # against this.
+    outputs:
+      analysis_root: ${{ steps.root.outputs.path }}
     strategy:
       fail-fast: false
       matrix:
@@ -119,15 +134,16 @@ jobs:
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
-      # cppcheck is built from source and the Arm toolchain is a large download, so both are
-      # cached, keyed on their versions and the image they were built in. The cache is saved as
+      # cppcheck is built from source, and the Arm toolchain and LLVM are large downloads, so all
+      # are cached, keyed on their versions and the image they were built in. The cache is saved as
       # soon as the tools are installed, so a later failing step does not discard it.
       - name: Restore the analysis tools
         id: tools-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.SAST_SKIP_ARM_GCC == '1' && 'none' || env.ARM_GCC_ANALYZER_VERSION }}
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.SAST_SKIP_ARM_GCC == '1' && 'none'
+            || env.ARM_GCC_ANALYZER_VERSION }}-codechecker-${{ env.CODECHECKER_VERSION }}-llvm-${{ env.LLVM_VERSION }}
       - name: Install the analysis tools
         run: make sast-tools
       - name: Save the analysis tools
@@ -136,6 +152,9 @@ jobs:
         with:
           path: build/sast-tools
           key: ${{ steps.tools-cache.outputs.cache-primary-key }}
+      - name: Record where the checkout is
+        id: root
+        run: echo "path=$PWD" >> "$GITHUB_OUTPUT"
       - name: Fetch submodules
         run: make submodules
       - name: Build
@@ -146,6 +165,10 @@ jobs:
         run: make cppcheck-${{ matrix.configuration }}
       - name: cppcheck coverage
         run: make check-cppcheck-${{ matrix.configuration }}
+      - name: CodeChecker
+        run: make codechecker-${{ matrix.configuration }}
+      - name: CodeChecker coverage
+        run: make check-codechecker-${{ matrix.configuration }}
       - name: GCC -fanalyzer (report only)
         if: env.BASE == '' && matrix.fanalyzer
         run: make fanalyzer-${{ matrix.configuration }}
@@ -160,6 +183,10 @@ jobs:
             ${{ matrix.build_dir }}/sast/pr/scope.json
             ${{ matrix.build_dir }}/sast/cppcheck/*.sarif
             ${{ matrix.build_dir }}/sast/cppcheck/run
+            ${{ matrix.build_dir }}/sast/codechecker/results.sarif
+            ${{ matrix.build_dir }}/sast/codechecker/run
+            ${{ matrix.build_dir }}/sast/codechecker/reports/metadata.json
+            ${{ matrix.build_dir }}/sast/codechecker/reports/failed/
             ${{ matrix.build_dir }}/sast/fanalyzer/
 
   # cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only. A job of
@@ -189,6 +216,7 @@ jobs:
     env:
       SAST_TOOLS: ${{ vars.SAST_TOOLS }}
       SAST_SKIP_ARM_GCC: '1'
+      SAST_SKIP_CODECHECKER: '1'
     steps:
       - name: Require the analysis tools declaration
         run: |
@@ -206,7 +234,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}-codechecker-${{
+            env.CODECHECKER_VERSION }}-llvm-${{ env.LLVM_VERSION }}
           restore-keys: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-
       - name: Install the analysis tools
         run: make sast-tools
@@ -237,6 +266,7 @@ jobs:
     env:
       SAST_TOOLS: ${{ vars.SAST_TOOLS }}
       SAST_SKIP_ARM_GCC: '1'
+      SAST_SKIP_CODECHECKER: '1'
     steps:
       - name: Require the analysis tools declaration
         run: |
@@ -251,7 +281,8 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/sast-tools
-          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}
+          key: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-arm-gcc-${{ env.ARM_GCC_ANALYZER_VERSION }}-codechecker-${{
+            env.CODECHECKER_VERSION }}-llvm-${{ env.LLVM_VERSION }}
           restore-keys: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-
       - name: Install the analysis tools
         run: make sast-tools
@@ -317,6 +348,13 @@ jobs:
           fi
           npx --yes @microsoft/sarif-multitool@5.7.0 merge $cppcheck --merge-empty-logs \
             --output-directory sast-out --output-file cppcheck.sarif --log ForceOverwrite
+          codechecker=$(find sast-in -path '*/codechecker/results.sarif' | sort)
+          if [ -z "$codechecker" ]; then
+            echo "::error::No CodeChecker SARIF for ${{ matrix.configuration }}."
+            exit 1
+          fi
+          npx --yes @microsoft/sarif-multitool@5.7.0 merge $codechecker --merge-empty-logs \
+            --output-directory sast-out --output-file codechecker.sarif --log ForceOverwrite
           gcc=$(find sast-in -path '*/fanalyzer/*.sarif' | sort)
           if [ -n "$gcc" ]; then
             npx --yes @microsoft/sarif-multitool@5.7.0 merge $gcc --merge-empty-logs \
@@ -326,6 +364,24 @@ jobs:
         with:
           sarif_file: sast-out/cppcheck.sarif
           category: cppcheck/${{ matrix.configuration }}
+      # CodeChecker names each file by its absolute path in the analysis container. upload-sarif
+      # relativises absolute paths against checkout_path, and computes fingerprints from the files
+      # under it, so that path is linked to this job's checkout, which holds the same commit and
+      # submodules.
+      - name: Link the analysis root to this checkout
+        env:
+          ANALYSIS_ROOT: ${{ needs.analyse.outputs.analysis_root }}
+        run: |
+          set -eu
+          if [ "$ANALYSIS_ROOT" != "$GITHUB_WORKSPACE" ]; then
+            sudo mkdir -p "$(dirname "$ANALYSIS_ROOT")"
+            sudo ln -sfn "$GITHUB_WORKSPACE" "$ANALYSIS_ROOT"
+          fi
+      - uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: sast-out/codechecker.sarif
+          category: codechecker/${{ matrix.configuration }}
+          checkout_path: ${{ needs.analyse.outputs.analysis_root }}
       - uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
         if: hashFiles('sast-out/gcc-analyzer.sarif') != ''
         with:

@@ -284,8 +284,10 @@ tools/typings/VERSIONS:
 #
 # The analysers are upstream releases and none of them is in this repository: cppcheck
 # $(CPPCHECK_VERSION) built unmodified from its release archive, checked against a pinned SHA-256,
-# GCC -fanalyzer from the Arm GNU Toolchain $(ARM_GCC_ANALYZER_VERSION), compiledb for the
-# compilation databases, and the REUSE tool for the licence declarations. The degraves-sast package adds only what no accepted tool does: compiler
+# GCC -fanalyzer from the Arm GNU Toolchain $(ARM_GCC_ANALYZER_VERSION), CodeChecker
+# $(CODECHECKER_VERSION) driving the Clang Static Analyzer of LLVM $(LLVM_VERSION), both pinned by
+# SHA-256, compiledb for the compilation databases, and the REUSE tool for the licence
+# declarations. The degraves-sast package adds only what no accepted tool does: compiler
 # predefines for cppcheck, the database completeness check, pull-request scope from the build's own
 # dependency files, ownership from the repository's structure, and the accepted coverage gaps
 # check. `make sast-tools` installs all of it into $(SAST_TOOLS_DIR), inside the same pinned
@@ -315,10 +317,15 @@ tools/typings/VERSIONS:
 SAST_TOOLS_DIR ?= $(PROJECT_BASE)/build/sast-tools
 CPPCHECK_VERSION ?= 2.22.0
 ARM_GCC_ANALYZER_VERSION ?= 15.2.rel1
+# The releases GitLab Advanced SAST's C/C++ job runs (analyzer image clangsa:1, v1.8.0).
+CODECHECKER_VERSION ?= 6.25.1
+LLVM_VERSION ?= 20.1.8
 JOBS ?= $(shell nproc)
 
 CPPCHECK = $(SAST_TOOLS_DIR)/cppcheck/bin/cppcheck
 ARM_GCC_ANALYZER = $(SAST_TOOLS_DIR)/arm-gnu-toolchain-$(ARM_GCC_ANALYZER_VERSION)/bin/arm-none-eabi-gcc
+CODECHECKER = $(SAST_TOOLS_DIR)/codechecker-$(CODECHECKER_VERSION)/bin/CodeChecker
+CLANG = $(SAST_TOOLS_DIR)/llvm-$(LLVM_VERSION)/bin/clang
 SAST_BIN = $(SAST_TOOLS_DIR)/python/bin
 SAST_ENV = PATH="$(SAST_BIN):$$PATH" PYTHONPATH="$(SAST_TOOLS_DIR)/python"
 ANALYSIS_POLICY = $(PROJECT_BASE)/analysis
@@ -394,7 +401,8 @@ SAST_DIR = $(SAST_BUILD_$*)/sast
 # the command line or in the environment are passed through, because the image starts with neither.
 ifeq ($(RUN_IN_DOCKER), 1)
 SAST_PASS_VARS = SAST_TOOLS SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
-  SAST_SKIP_ARM_GCC JOBS BASE SAST_SHARDS SAST_SHARD CPPCHECK_ENABLE
+  CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS BASE SAST_SHARDS \
+  SAST_SHARD CPPCHECK_ENABLE
 SAST_PASS = $(strip $(foreach v,$(SAST_PASS_VARS),\
   $(if $(filter command line environment,$(origin $(v))),$(v)="$($(v))")))
 SAST_TOOLS_MOUNT = $(if $(wildcard $(SAST_TOOLS)/pyproject.toml),\
@@ -439,7 +447,8 @@ else
 	python3 -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade \
 	  --target $(SAST_TOOLS_DIR)/python "$(SAST_TOOLS)"
 	$(SAST_ENV) sast-install-tools --prefix $(SAST_TOOLS_DIR) --cppcheck $(CPPCHECK_VERSION) \
-	  $(if $(SAST_SKIP_ARM_GCC),--skip-arm-gcc,--arm-gcc $(ARM_GCC_ANALYZER_VERSION))
+	  $(if $(SAST_SKIP_ARM_GCC),--skip-arm-gcc,--arm-gcc $(ARM_GCC_ANALYZER_VERSION)) \
+	  $(if $(SAST_SKIP_CODECHECKER),--skip-codechecker,--codechecker $(CODECHECKER_VERSION) --llvm $(LLVM_VERSION))
 endif
 
 # Help lists these per configuration; <cfg> is one of $(SAST_CONFIGS).
@@ -450,9 +459,11 @@ endif
 #> cppcheck-<cfg>                cppcheck full run; with BASE=<ref>, the pull-request run
 #> check-cppcheck-<cfg>          Fail on a coverage failure outside analysis/coverage-gaps.json
 #> misra-<cfg>                   cppcheck's MISRA addon over every unit, report only, into <build dir>/sast/report
+#> codechecker-<cfg>             CodeChecker with the Clang Static Analyzer; with BASE=<ref>, the pull-request run
+#> check-codechecker-<cfg>       Fail unless CodeChecker analysed every unit of its run
 #> fanalyzer-<cfg>               GCC -fanalyzer, ARM configurations only
 SAST_TARGETS = build compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck \
-  misra
+  misra codechecker check-codechecker
 .PHONY: $(foreach t,$(SAST_TARGETS),$(addprefix $(t)-,$(SAST_CONFIGS))) \
   $(addprefix fanalyzer-,$(SAST_CONFIGS))
 
@@ -663,9 +674,76 @@ else
 	  --root $(PROJECT_BASE) $(SAST_DIR)/cppcheck/*.sarif
 endif
 
+# --- CodeChecker with the Clang Static Analyzer
+#
+# A path-sensitive analyser beside cppcheck, and the engine of GitLab Advanced SAST's C/C++ job
+# (gitlab-advanced-sast-cpp, analyzer image clangsa): the same CodeChecker and clang releases and
+# that job's default checker selection, CodeChecker's sensitive profile over the clangsa analyzer
+# alone, so a run here reproduces what the job reports. CodeChecker reads the database itself and
+# asks each entry's own compiler, arm-none-eabi-gcc or the host gcc, for its target and implicit
+# include directories, so clang parses each unit for the target it is built for. A pull-request run
+# analyses the units cppcheck's does, a full run every unit, with the same checkers.
+#
+# The SARIF is CodeChecker's own export, which in this release names every file by its absolute
+# path (file://...) whatever --trim-path-prefix says. GitHub's upload relativises those against the
+# directory the analysis ran in (.github/workflows/sast.yml), so the file is not rewritten here.
+# CodeChecker exits 3 when a unit failed to analyse and its parse exits 2 when there are results,
+# and neither ends the target: check-codechecker-<cfg> judges coverage from CodeChecker's own
+# record of the run. PYTHONPATH and PYTHONHOME are cleared for it, since they may name another
+# Python's packages.
+CODECHECKER_ENV = env -u PYTHONPATH -u PYTHONHOME CC_ANALYZER_BIN="clangsa:$(CLANG)"
+
+define codechecker_run
+	rc=0; $(CODECHECKER_ENV) $(CODECHECKER) analyze $(1) --analyzers clangsa --enable=sensitive \
+	  --jobs $(JOBS) --output $(SAST_DIR)/codechecker/reports || rc=$$?; \
+	test $$rc -eq 0 -o $$rc -eq 3 || { echo "CodeChecker analyze exited $$rc."; exit 1; }
+	rc=0; $(CODECHECKER_ENV) $(CODECHECKER) parse $(SAST_DIR)/codechecker/reports --export sarif \
+	  --output $(SAST_DIR)/codechecker/results.sarif || rc=$$?; \
+	test $$rc -eq 0 -o $$rc -eq 2 || { echo "CodeChecker parse exited $$rc."; exit 1; }
+endef
+
+$(addprefix codechecker-,$(SAST_CONFIGS)): codechecker-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-pr-scope $(CODECHECKER) $(CLANG))
+	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
+	$(call sast_require_file,$(SAST_DIR)/includes.json)
+	@rm -rf $(SAST_DIR)/codechecker
+	@mkdir -p $(SAST_DIR)/codechecker
+ifneq ($(BASE),)
+	$(sast_pr_scope)
+	$(call codechecker_run,$(SAST_DIR)/pr/compile_commands.json)
+	@echo pr > $(SAST_DIR)/codechecker/run
+else
+	$(call codechecker_run,$(SAST_DIR)/compile_commands.json)
+	@echo full > $(SAST_DIR)/codechecker/run
+endif
+endif
+
+# Coverage, not findings: every unit of the run's database is in CodeChecker's own record of the
+# run (reports/metadata.json) as analysed, and none as failed outside the accepted gaps. Assembly
+# units, which CodeChecker skips, are listed as not analysed.
+$(addprefix check-codechecker-,$(SAST_CONFIGS)): check-codechecker-%:
+ifeq ($(RUN_IN_DOCKER), 1)
+	$(SAST_DOCKER)
+else
+	$(call sast_require,$(SAST_BIN)/sast-codechecker-coverage)
+	@run="$$(cat $(SAST_DIR)/codechecker/run 2>/dev/null)"; \
+	case "$$run" in \
+	  full) full=--full; db=$(SAST_DIR)/compile_commands.json;; \
+	  pr) full=; db=$(SAST_DIR)/pr/compile_commands.json;; \
+	  *) echo "$(SAST_DIR)/codechecker/run is missing, so no CodeChecker run finished. Run make codechecker-$* first."; \
+	    exit 1;; esac; \
+	echo "checking the $$run run against $$db"; \
+	$(SAST_ENV) sast-codechecker-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
+	  --configuration $* $$full --db $$db --root $(PROJECT_BASE) \
+	  $(SAST_DIR)/codechecker/reports/metadata.json
+endif
+
 # --- GCC -fanalyzer
 #
-# The second analyser. Each database entry is replayed with the pinned GCC 15, which writes its
+# GCC's own analyser. Each database entry is replayed with the pinned GCC 15, which writes its
 # own SARIF to a named file per unit. Full runs only, and report-only until its findings are
 # triaged.
 $(addprefix fanalyzer-,$(SAST_ARM_CONFIGS)): fanalyzer-%:
@@ -687,7 +765,7 @@ $(addprefix fanalyzer-,$(filter-out $(SAST_ARM_CONFIGS),$(SAST_CONFIGS))): fanal
 SAST_FW = $(PORT)-$(BOARD)
 
 .PHONY: compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck misra \
-  fanalyzer
+  codechecker check-codechecker fanalyzer
 compile-commands:  ## Generate the firmware configuration's compilation database (build it first)
 compile-commands: compile-commands-$(SAST_FW)
 check-compile-commands:  ## Reconcile the firmware configuration's database against its build output
@@ -700,6 +778,10 @@ check-cppcheck:  ## Fail on a coverage failure in the firmware configuration out
 check-cppcheck: check-cppcheck-$(SAST_FW)
 misra:  ## MISRA over the firmware configuration's every unit, report only
 misra: misra-$(SAST_FW)
+codechecker:  ## Analyse the firmware configuration with CodeChecker (BASE=<ref> for a pull-request run)
+codechecker: codechecker-$(SAST_FW)
+check-codechecker:  ## Fail unless CodeChecker analysed every unit of the firmware configuration's run
+check-codechecker: check-codechecker-$(SAST_FW)
 fanalyzer:  ## Analyse the firmware configuration with GCC -fanalyzer
 fanalyzer: fanalyzer-$(SAST_FW)
 

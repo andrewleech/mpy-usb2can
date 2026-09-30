@@ -9,23 +9,29 @@
 #
 # A merge request pipeline sets BASE to the merge request's diff base, which makes each job a
 # pull-request run: only the first-party translation units the diff reaches, at cppcheck's warning
-# severity and above. Every other pipeline is a full run: every unit, whoever owns it, at every
-# severity, with GCC -fanalyzer on the ARM configurations, and in the misra job cppcheck's MISRA
-# addon over every unit. A job fails when a tool is missing, a compilation database is empty or
-# incomplete, a compiled path fits no ownership class, or cppcheck reports a coverage failure
-# outside analysis/coverage-gaps.json.
+# severity and above, and through CodeChecker's Clang Static Analyzer. Every other pipeline is a
+# full run: every unit, whoever owns it, at every severity, with CodeChecker, GCC -fanalyzer on the
+# ARM configurations, and in the misra job cppcheck's MISRA addon over every unit. A job fails when
+# a tool is missing, a compilation database is empty or incomplete, a compiled path fits no
+# ownership class, or cppcheck or CodeChecker could not analyse a unit outside
+# analysis/coverage-gaps.json.
 #
 # SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
 # comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
 # is no default; unset, every job fails first.
 #
+# CodeChecker is GitLab Advanced SAST's C/C++ engine (the gitlab-advanced-sast-cpp job, analyzer
+# image clangsa), at the releases that job runs, CodeChecker 6.25.1 and clang 20.1.8, with its
+# default checkers, so the sast job here reports what that job would for the same database, on an
+# instance without Advanced SAST and without running GitLab's own analyzer image.
+#
 # Gap against GitHub: the results go no further than this job's artefacts. GitLab's Vulnerability
 # Report and its merge request approval policies read GitLab's own security report schema
-# (artifacts:reports:sast), not SARIF, and nothing here converts cppcheck's or GCC's SARIF to it.
-# So on GitLab a finding neither appears in the Vulnerability Report nor blocks a merge request,
-# and triage works from the SARIF artefacts. Closing that gap needs either a SARIF to GitLab report
-# converter, which would be SARIF rewriting of the programme's own, or GitLab Advanced SAST reading
-# the compilation database directly (below).
+# (artifacts:reports:sast), not SARIF, and nothing here converts cppcheck's, CodeChecker's or GCC's
+# SARIF to it. So on GitLab a finding neither appears in the Vulnerability Report nor blocks a merge
+# request, and triage works from the SARIF artefacts. Closing that gap needs either a SARIF to
+# GitLab report converter, which would be SARIF rewriting of the programme's own, or GitLab
+# Advanced SAST reading the compilation database directly (below).
 
 stages:
   - analyse
@@ -38,6 +44,8 @@ variables:
   # digest and is part of the key, because cppcheck is built in and for it.
   CPPCHECK_VERSION: 2.22.0
   ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+  CODECHECKER_VERSION: 6.25.1
+  LLVM_VERSION: 20.1.8
   SAST_IMAGE: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
   IMAGE_DIGEST: sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
 
@@ -68,10 +76,10 @@ sast:
           - unix-standard
           - mpy-cross
         SAST_FANALYZER: ""
-  # cppcheck is built from source and the Arm toolchain is a large download, so both are cached,
-  # keyed on their versions and the image.
+  # cppcheck is built from source, and the Arm toolchain and LLVM are large downloads, so all are
+  # cached, keyed on their versions and the image.
   cache:
-    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip$SAST_SKIP_ARM_GCC
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip$SAST_SKIP_ARM_GCC
     paths:
       - build/sast-tools/
   before_script:
@@ -91,6 +99,8 @@ sast:
     - make compile-commands-$SAST_CONFIGURATION
     - make cppcheck-$SAST_CONFIGURATION
     - make check-cppcheck-$SAST_CONFIGURATION
+    - make codechecker-$SAST_CONFIGURATION
+    - make check-codechecker-$SAST_CONFIGURATION
     - if [ -z "$BASE" ] && [ -n "$SAST_FANALYZER" ]; then make fanalyzer-$SAST_CONFIGURATION; fi
   # Only this job's configuration has a sast/ directory, so the globs name its files alone.
   artifacts:
@@ -103,6 +113,10 @@ sast:
       - src/**/sast/pr/scope.json
       - src/**/sast/cppcheck/*.sarif
       - src/**/sast/cppcheck/run
+      - src/**/sast/codechecker/results.sarif
+      - src/**/sast/codechecker/run
+      - src/**/sast/codechecker/reports/metadata.json
+      - src/**/sast/codechecker/reports/failed/
       - src/**/sast/fanalyzer/
 
 # cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only, in a job
@@ -119,6 +133,7 @@ misra:
     - if: $CI_PIPELINE_SOURCE == "web"
   variables:
     SAST_SKIP_ARM_GCC: "1"
+    SAST_SKIP_CODECHECKER: "1"
   parallel:
     matrix:
       - SAST_CONFIGURATION:
@@ -128,12 +143,12 @@ misra:
           - unix-standard
           - mpy-cross
   # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
-  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain is only
-  # skipped, not removed.
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain and
+  # CodeChecker are only skipped, not removed.
   cache:
-    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip
     fallback_keys:
-      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip1
     paths:
       - build/sast-tools/
     policy: pull
@@ -168,13 +183,14 @@ licences:
   timeout: 30m
   variables:
     SAST_SKIP_ARM_GCC: "1"
+    SAST_SKIP_CODECHECKER: "1"
   # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
-  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain is only
-  # skipped, not removed.
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain and
+  # CodeChecker are only skipped, not removed.
   cache:
-    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip
     fallback_keys:
-      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-skip1
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip1
     paths:
       - build/sast-tools/
     policy: pull
@@ -195,9 +211,10 @@ licences:
     - make sast-tools
     - make check-reuse
 
-# When GitLab Advanced SAST is enabled for C/C++, it reads a configuration's compilation database
-# from this job's artefacts, for example the bootloader's:
+# When GitLab Advanced SAST is enabled for C/C++ (GitLab 18.6 or later), it reads a configuration's
+# compilation database from this job's artefacts, for example the bootloader's:
 #   variables:
 #     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
 #     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/sast/compile_commands.json
-# That is a separate analyser writing GitLab's own report schema, and is not wired here.
+# That is a separate analyzer writing GitLab's own report schema, and is not wired here; the sast
+# job's CodeChecker targets are its local equivalent.
