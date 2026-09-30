@@ -1,25 +1,15 @@
 name: SAST
 
-# C static analysis: cppcheck and CodeChecker's Clang Static Analyzer on every run, plus cppcheck's
-# MISRA addon and GCC -fanalyzer on full runs, over every agreed configuration. Each analysis job
-# runs the Makefile's targets in the build image, pinned by digest, the same commands a developer
-# runs locally (CLAUDE.md, Static analysis), and fails when a tool is missing, a compilation
-# database is empty or incomplete, a compiled path fits no ownership class, or cppcheck or
-# CodeChecker could not analyse a unit outside analysis/coverage-gaps.json. A full run, or a
-# pull-request run whose change reaches any translation unit, never passes having analysed
-# nothing; a pull-request run whose change reaches none analyses an empty file with cppcheck and an
-# empty database with CodeChecker, so its categories still receive a valid SARIF.
+# C static analysis: cppcheck and CodeChecker's Clang Static Analyzer over every translation unit of
+# every agreed configuration on every run, plus, off pull requests, GCC -fanalyzer on the ARM
+# configurations and cppcheck's MISRA addon. Each analysis job runs the Makefile's targets in the
+# build image, pinned by digest, the same commands a developer runs locally (CLAUDE.md, Static
+# analysis), and fails when a tool is missing, a compilation database is empty or incomplete, or
+# cppcheck or CodeChecker could not analyse a unit outside analysis/coverage-gaps.json.
 #
-# Two kinds of run from one configuration:
-# - Pull request: BASE is the branch the pull request merges into, and each configuration analyses
-#   only the first-party translation units the diff reaches through their include sets, at
-#   cppcheck's warning severity and above, the ones that can gate, and with CodeChecker's one
-#   checker selection.
-# - Full: every other trigger. Every translation unit, whoever owns it, at every severity, with
-#   GCC -fanalyzer on the ARM configurations, and in a separate job cppcheck's MISRA addon over
-#   every unit. Both are report-only. MISRA over every unit runs to tens of thousands of results,
-#   more than code scanning accepts in one run (25,000), so its results stay in that job's
-#   artefact, and the upload does not wait for it.
+# -fanalyzer and MISRA are report-only. MISRA over every unit runs to tens of thousands of results,
+# more than code scanning accepts in one run (25,000), so its results stay in that job's artefact,
+# and the upload does not wait for it.
 #
 # CodeChecker runs the Clang Static Analyzer at the releases GitLab Advanced SAST's C/C++ job runs
 # (CodeChecker 6.25.1, clang 20.1.8) with that job's default checkers, so its results are what that
@@ -72,7 +62,7 @@ env:
 
 jobs:
   analyse:
-    name: ${{ matrix.configuration }} (shard ${{ matrix.shard }})
+    name: ${{ matrix.configuration }}
     runs-on: ubuntu-latest
     container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     timeout-minutes: 180
@@ -90,9 +80,6 @@ jobs:
           - mimxrt-USB2CAN_SEEED_ARCH_MIX
           - unix-standard
           - mpy-cross
-        # To split each pull-request run across N jobs, make the first list 0..N-1 and set
-        # SAST_SHARDS below to N. A full run is never split.
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[0]') }}
         include:
           - configuration: stm32-USB2CAN_NUCLEO_H563ZI
             build_dir: src/system/build-USB2CAN_NUCLEO_H563ZI
@@ -113,11 +100,7 @@ jobs:
             fanalyzer: false
     env:
       SAST_TOOLS: ${{ vars.SAST_TOOLS }}
-      # Read by the Makefile: set, it makes the run a pull-request run.
-      BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
-      SAST_SHARDS: 1
-      SAST_SHARD: ${{ matrix.shard }}
-      # Pull-request runs do not run -fanalyzer, so they do not fetch its toolchain.
+      # -fanalyzer does not run on pull requests, so they do not fetch its toolchain.
       SAST_SKIP_ARM_GCC: ${{ github.event_name == 'pull_request' && '1' || '' }}
     steps:
       - name: Require the analysis tools declaration
@@ -128,8 +111,7 @@ jobs:
           fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The pull-request scope diffs against the merge base with BASE, and the build version
-          # comes from tags.
+          # The build version comes from tags.
           fetch-depth: 0
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
@@ -170,26 +152,21 @@ jobs:
       - name: CodeChecker coverage
         run: make check-codechecker-${{ matrix.configuration }}
       - name: GCC -fanalyzer (report only)
-        if: env.BASE == '' && matrix.fanalyzer
+        if: github.event_name != 'pull_request' && matrix.fanalyzer
         run: make fanalyzer-${{ matrix.configuration }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: sast-${{ matrix.configuration }}-shard${{ matrix.shard }}
+          name: sast-${{ matrix.configuration }}
           path: |
             ${{ matrix.build_dir }}/sast/compile_commands.json
-            ${{ matrix.build_dir }}/sast/includes.json
-            ${{ matrix.build_dir }}/sast/pr/compile_commands.json
-            ${{ matrix.build_dir }}/sast/pr/scope.json
             ${{ matrix.build_dir }}/sast/cppcheck/*.sarif
-            ${{ matrix.build_dir }}/sast/cppcheck/run
             ${{ matrix.build_dir }}/sast/codechecker/results.sarif
-            ${{ matrix.build_dir }}/sast/codechecker/run
             ${{ matrix.build_dir }}/sast/codechecker/reports/metadata.json
             ${{ matrix.build_dir }}/sast/codechecker/reports/failed/
             ${{ matrix.build_dir }}/sast/fanalyzer/
 
-  # cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only. A job of
+  # cppcheck's MISRA addon over every unit of each configuration, off pull requests, report-only. A job of
   # its own because the addon makes it several times slower than the analysis that gates, and its
   # results stay in its artefact: MISRA over every unit runs to tens of thousands of results, more
   # than code scanning accepts in one run (25,000). The upload does not wait for it.
@@ -290,7 +267,7 @@ jobs:
         run: make check-reuse
 
   # Code scanning takes one run per tool and category per upload, so each configuration's SARIF
-  # files, one per compiler-flag group, shard and -fanalyzer unit, are merged per tool
+  # files, one per compiler-flag group and -fanalyzer unit, are merged per tool
   # with SARIF Multitool first; the results themselves pass through unchanged. This job runs only
   # when every analysis job passed: a partial upload would mark findings in the units that were
   # not analysed as fixed. It is also the only job that can write security events.
@@ -335,7 +312,7 @@ jobs:
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: sast-${{ matrix.configuration }}-shard*
+          name: sast-${{ matrix.configuration }}
           path: sast-in
       - name: Merge SARIF per tool
         run: |

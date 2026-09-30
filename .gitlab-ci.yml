@@ -7,14 +7,11 @@
 # with git-versioner itself and exports MICROPY_GIT_TAG/MICROPY_GIT_HASH; that needs full history
 # and tags.
 #
-# A merge request pipeline sets BASE to the merge request's diff base, which makes each job a
-# pull-request run: only the first-party translation units the diff reaches, at cppcheck's warning
-# severity and above, and through CodeChecker's Clang Static Analyzer. Every other pipeline is a
-# full run: every unit, whoever owns it, at every severity, with CodeChecker, GCC -fanalyzer on the
-# ARM configurations, and in the misra job cppcheck's MISRA addon over every unit. A job fails when
-# a tool is missing, a compilation database is empty or incomplete, a compiled path fits no
-# ownership class, or cppcheck or CodeChecker could not analyse a unit outside
-# analysis/coverage-gaps.json.
+# Every pipeline analyses every translation unit of each configuration, whoever owns it, with
+# cppcheck and CodeChecker's Clang Static Analyzer. Off merge requests it also runs GCC -fanalyzer
+# on the ARM configurations and, in the misra job, cppcheck's MISRA addon over every unit. A job
+# fails when a tool is missing, a compilation database is empty or incomplete, or cppcheck or
+# CodeChecker could not analyse a unit outside analysis/coverage-gaps.json.
 #
 # SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
 # comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
@@ -56,8 +53,7 @@ sast:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       variables:
-        BASE: $CI_MERGE_REQUEST_DIFF_BASE_SHA
-        # Pull-request runs do not run -fanalyzer, so they do not fetch its toolchain.
+        # -fanalyzer does not run on merge requests, so they do not fetch its toolchain.
         SAST_SKIP_ARM_GCC: "1"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_BRANCH == "sast"
@@ -101,25 +97,20 @@ sast:
     - make check-cppcheck-$SAST_CONFIGURATION
     - make codechecker-$SAST_CONFIGURATION
     - make check-codechecker-$SAST_CONFIGURATION
-    - if [ -z "$BASE" ] && [ -n "$SAST_FANALYZER" ]; then make fanalyzer-$SAST_CONFIGURATION; fi
+    - if [ "$CI_PIPELINE_SOURCE" != merge_request_event ] && [ -n "$SAST_FANALYZER" ]; then make fanalyzer-$SAST_CONFIGURATION; fi
   # Only this job's configuration has a sast/ directory, so the globs name its files alone.
   artifacts:
     when: always
     expire_in: 4 weeks
     paths:
       - src/**/sast/compile_commands.json
-      - src/**/sast/includes.json
-      - src/**/sast/pr/compile_commands.json
-      - src/**/sast/pr/scope.json
       - src/**/sast/cppcheck/*.sarif
-      - src/**/sast/cppcheck/run
       - src/**/sast/codechecker/results.sarif
-      - src/**/sast/codechecker/run
       - src/**/sast/codechecker/reports/metadata.json
       - src/**/sast/codechecker/reports/failed/
       - src/**/sast/fanalyzer/
 
-# cppcheck's MISRA addon over every unit of each configuration, on full runs, report-only, in a job
+# cppcheck's MISRA addon over every unit of each configuration, off merge requests, report-only, in a job
 # of its own because the addon makes it several times slower than the analysis above. Its results
 # stay in its artefact.
 misra:

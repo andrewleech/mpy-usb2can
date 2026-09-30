@@ -37,18 +37,15 @@ them and the targets below.
 make sast-tools SAST_TOOLS=/path/to/sast   # install the analysers once, into build/sast-tools
 
 make build-<cfg>                    # build the configuration
-make compile-commands-<cfg>         # compilation database and include sets, checked against the build
+make compile-commands-<cfg>         # compilation database, checked against the build
 make check-compile-commands-<cfg>   # re-run that completeness check alone
-make cppcheck-<cfg>                 # full run: every unit, every severity
-make cppcheck-<cfg> BASE=origin/main   # pull-request run: the units a diff against BASE reaches
+make cppcheck-<cfg>                 # cppcheck over every unit
 make check-cppcheck-<cfg>           # fail on a coverage failure outside analysis/coverage-gaps.json
-make codechecker-<cfg>              # CodeChecker's Clang Static Analyzer; BASE=origin/main as above
+make codechecker-<cfg>              # CodeChecker's Clang Static Analyzer over every unit
 make check-codechecker-<cfg>        # fail unless it analysed every unit, outside the accepted gaps
 make misra-<cfg>                    # MISRA over every unit, report only, into sast/report/
 make fanalyzer-<cfg>                # GCC -fanalyzer, ARM configurations only
 make check-reuse                    # licence and origin declarations, with the REUSE tool
-make scope                          # resolve analysis scope from the manifest chain
-make check-scope                    # fail if the manifest declares what the scope does not cover
 ```
 
 `compile-commands`, `cppcheck`, `check-cppcheck`, `codechecker`, `fanalyzer` and the others without
@@ -66,33 +63,30 @@ analysis target fails with the install command when a tool is missing, and cppch
 against its pinned version.
 
 Output lands in each configuration's build directory under `sast/` (`compile_commands.json`,
-`includes.json`, `cppcheck/*.sarif`, `cppcheck/run`, `codechecker/results.sarif`,
-`codechecker/reports/`, `report/*.sarif`, `fanalyzer/`), so removing
-a build directory removes its analysis output too. `make clean` removes the current `BOARD`'s build directory and
-the unix and mpy-cross builds; the other board's needs `make clean BOARD=USB2CAN_SEEED_ARCH_MIX`.
-The exception is `make scope`, whose artefacts span configurations and go to `build/scope`.
+`cppcheck/*.sarif`, `codechecker/results.sarif`, `codechecker/reports/`, `report/*.sarif`,
+`fanalyzer/`), so removing a build directory removes its analysis output too. `make clean` removes
+the current `BOARD`'s build directory and the unix and mpy-cross builds; the other board's needs
+`make clean BOARD=USB2CAN_SEEED_ARCH_MIX`.
 
 #### What is analysed
 
-Every translation unit a configuration compiles is analysed, whoever owns it: this repository's
-code, the MicroPython submodule and its libraries, and the generated code in the build directory.
-Ownership decides only where a finding is fixed and whether it can gate. Assembly is the exception
-(Known limitations). Python is not analysed yet: the frozen modules each configuration embeds,
-third-party ones included, are in scope, and the tool for them is not decided.
+Every run analyses every translation unit a configuration compiles, whoever owns it: this
+repository's code, the MicroPython submodule and its libraries, and the generated code in the build
+directory. Assembly is the exception (Known limitations). Python is not analysed yet: the frozen
+modules each configuration embeds, third-party ones included, are in scope, and the tool for them
+is not decided.
 
 #### Ownership
 
-Every path a configuration compiles or includes is in exactly one class, following Zephyr's
-convention:
+Ownership follows Zephyr's convention and is read from the path; nothing computes it:
 
 | Class | What it is | Findings |
 |---|---|---|
 | First-party | Tracked in this repository, including third-party code copied into it | Gate |
-| External | Tracked by a git submodule (`src/micropython`, `src/libs/*`) | Uploaded and visible; gate in the repository that owns the code |
-| Generated | Inside the configuration's build directory, which the Makefile names | Uploaded and visible; never gate, because the fix is in the generator or its input |
-| System | Outside this repository and included by a unit, such as the compiler's own headers | Uploaded and visible; never gate |
+| External | In a git submodule (`src/micropython`, `src/libs/*`) | Uploaded and visible; fixed and gated in the repository that owns the code |
+| Generated | Inside the configuration's build directory | Uploaded and visible; the fix is in the generator or its input |
 
-A tracked path is first-party however it resolves. The run fails if a file tracked as a regular file is a link in the working tree, since the build could have moved it, linked it back and compiled it under another name; a tracked file missing from the working tree, such as a deletion not yet committed or a sparse checkout's absent file, does not fail it. Anything else fails the run rather than falling into a class: a compiled or included file that is untracked, outside every submodule and outside the build directory; a file in a submodule's working tree that no index holds, neither the submodule's nor that of a submodule nested in it: either a new file of a submodule's own not yet staged there (stage it in the innermost submodule holding it, with the `git -C <that submodule> add <path>` the refusal names) or one the build copied or wrote there, such as a board directory copied into a port's `boards/` under a name the port does not already have; a file that is the same file as a tracked one under another name, such as a hard link or a link to it; a file inside the build directory or a submodule only through a link out of it; a file below a link in this repository that leads into a submodule or out of the repository, which is classed where it is written and which git cannot track; a translation unit outside the repository; or a build directory that holds a tracked file, is or contains the repository, or resolves through a link to one that does. No attribute, `.gitattributes` included, changes a class. Tracked is decided by path, never by content, so three things a build could do class code by where the build put it: a byte copy of a tracked file into the build directory, and a tracked file moved into the build directory with nothing left at its tracked path, are generated; a build that writes over a file a submodule tracks, such as this project's board files copied over a port's board of the same name, is external. Those are the limits of taking generated from the build directory and external from the submodules' indexes. Today the first-party C is `src/system/USB2CAN_NUCLEO_H563ZI/mboot_footer.c` and the board headers.
+It decides where a finding is fixed. It gates through the platform, not through anything here: merge protection acts only on lines a pull request changes, and submodule and build directory code is never in this repository's diff.
 
 To add a path:
 - A new first-party directory or file needs nothing: tracked and not in a submodule is
@@ -102,28 +96,23 @@ To add a path:
   rest. Record its copyright, licence and origin in `REUSE.toml`, and add the licence text under
   `LICENSES/` if it is not MIT; `make check-reuse` fails on a licence without its text.
 - A new configuration gets its variables in the Makefile's static analysis section, including its
-  build directory, an entry in `analysis/configurations.json`, and a matrix entry in
-  `.github/workflows/sast.yml` and `.gitlab-ci.yml`.
+  build directory, and a matrix entry in `.github/workflows/sast.yml` and `.gitlab-ci.yml`.
 
 Moving a first-party path into a submodule takes a reason in the commit, since it takes that code
 out of this repository's gate.
 
-#### Pull-request and full runs
+#### Runs
 
-A pull-request run (`BASE` set) analyses the first-party translation units the diff reaches
-through their include sets, plus one unit that includes each changed first-party header none of
-those does, at cppcheck's `warning` severity and above. A change to a board header reaches almost
-every unit, because the port's configuration includes it, so such a pull request costs about a
-full run. A full run analyses every unit of the configuration, whoever owns it, at every severity.
-Both runs also run CodeChecker with the Clang Static Analyzer over the same units, with one checker
-selection for both. The ARM configurations also run GCC `-fanalyzer`. `make misra-<cfg>` runs cppcheck's MISRA C:2012
-addon over every unit into `sast/report/`, report-only; CI runs it on full runs in a job of its own,
-because the addon makes it several times slower than the analysis that gates, and keeps its results
-as that job's artefact, kept 90 days: MISRA over every unit runs to tens of thousands of results,
-and code scanning rejects a run of more than 25,000 and displays 5,000. Its cppcheck coverage is
-asserted against `analysis/coverage-gaps.json` the same way as the full run's, so an aborted addon
-fails it; the addon's own incompleteness is not (Known limitations). CI runs pull-request runs on
-pull requests and full runs on pushes to `main` and `sast`, weekly and on demand.
+Every run, pull request or not, analyses every unit of the configuration with cppcheck at
+`warning,style,performance,portability` and with CodeChecker's Clang Static Analyzer. Off pull
+requests, the ARM configurations also run GCC `-fanalyzer`. `make misra-<cfg>` runs cppcheck's
+MISRA C:2012 addon over every unit into `sast/report/`, report-only; CI runs it off pull requests
+in a job of its own, because the addon makes it several times slower than the analysis that gates,
+and keeps its results as that job's artefact, kept 90 days: MISRA over every unit runs to tens of
+thousands of results, and code scanning rejects a run of more than 25,000 and displays 5,000. Its
+cppcheck coverage is asserted against `analysis/coverage-gaps.json` the same way as cppcheck's own
+run, so an aborted addon fails it; the addon's own incompleteness is not (Known limitations). CI
+runs on pull requests, pushes to `main` and `sast`, weekly and on demand.
 
 #### CodeChecker and GitLab Advanced SAST
 
@@ -178,9 +167,9 @@ EOF
 ```
 
 CI also fails, independently of any finding, when a tool is missing, a compilation database is
-empty or does not explain every object the build produced, a compiled or included path fits no
-ownership class, or cppcheck or CodeChecker could not analyse a unit outside
-`analysis/coverage-gaps.json`. A separate job fails when `make check-reuse` does.
+empty or does not explain every object the build produced, or cppcheck or CodeChecker could not
+analyse a unit outside `analysis/coverage-gaps.json`. A separate job fails when `make check-reuse`
+does.
 
 GitLab runs the same targets (`.gitlab-ci.yml`) and keeps the SARIF and databases as artefacts,
 but its Vulnerability Report and merge request approval policies read GitLab's own report schema,
@@ -188,13 +177,9 @@ not SARIF, so on GitLab the findings neither appear there nor block a merge requ
 
 #### Known limitations
 
-- A pull-request run uploads a subset of units to the same categories as a full run, so alerts on
-  the base branch in units the pull request did not analyse are listed as fixed in its code
-  scanning summary. They are not fixed, and they do not affect the merge check.
-- A pull-request run does not run `-fanalyzer`, so it uploads no `gcc-analyzer/<cfg>` category.
-  How code scanning reports a category the base branch has and a pull request lacks has not been
-  observed yet; the ruleset requires only the Cppcheck tool. Check it on the first real pull
-  request.
+- Pull requests do not run `-fanalyzer`, so they upload no `gcc-analyzer/<cfg>` category. How code
+  scanning reports a category the base branch has and a pull request lacks has not been observed
+  yet; the ruleset requires only the Cppcheck tool. Check it on the first real pull request.
 - A pull request from a fork gets no `security-events: write` token, so its results cannot be
   uploaded and the merge protection check waits on them.
 - The upload job runs only when every analysis job passed. One failing configuration uploads
@@ -222,11 +207,10 @@ not SARIF, so on GitLab the findings neither appear there nor block a merge requ
 
 #### Policy files
 
-`analysis/` holds this project's own analysis policy: `configurations.json` for the agreed build
-configurations, `cppcheck-suppressions.txt` for findings judged suppressible, with a reason per
-entry, and `coverage-gaps.json` for the coverage gaps accepted, cppcheck's under `accepted` and
-CodeChecker's under `codechecker`. `REUSE.toml` and `LICENSES/`
-declare the licence and origin of every file, and of copied code in particular.
+`analysis/` holds this project's own analysis policy: `cppcheck-suppressions.txt` for findings
+judged suppressible, with a reason per entry, and `coverage-gaps.json` for the coverage gaps
+accepted, cppcheck's under `accepted` and CodeChecker's under `codechecker`. `REUSE.toml` and
+`LICENSES/` declare the licence and origin of every file, and of copied code in particular.
 
 ### Testing
 ```bash

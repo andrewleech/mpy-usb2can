@@ -288,11 +288,10 @@ tools/typings/VERSIONS:
 # $(CODECHECKER_VERSION) driving the Clang Static Analyzer of LLVM $(LLVM_VERSION), both pinned by
 # SHA-256, compiledb for the compilation databases, and the REUSE tool for the licence
 # declarations. The degraves-sast package adds only what no accepted tool does: compiler
-# predefines for cppcheck, the database completeness check, pull-request scope from the build's own
-# dependency files, ownership from the repository's structure, and the accepted coverage gaps
-# check. `make sast-tools` installs all of it into $(SAST_TOOLS_DIR), inside the same pinned
-# $(IMAGE) that builds the firmware, and every target below runs there, so the database's compiler
-# and the analyser's derived type model come from the same compiler.
+# predefines for cppcheck, the database completeness check and the coverage checks. `make
+# sast-tools` installs all of it into $(SAST_TOOLS_DIR), inside the same pinned $(IMAGE) that
+# builds the firmware, and every target below runs there, so the database's compiler and the
+# analyser's derived type model come from the same compiler.
 #
 # SAST_TOOLS says where the package comes from, as a pip requirement: a path to a checkout of the
 # degraves SAST tree, or a VCS URL pinned to a commit (git+https://...@<40-hex commit>), so the
@@ -300,19 +299,20 @@ tools/typings/VERSIONS:
 # package has no published location yet, and a default pointing somewhere that does not exist
 # would fail later and less clearly.
 #
-# Every translation unit a configuration compiles is analysed, whoever owns it. Ownership, which
-# follows Zephyr's convention, decides only where a finding is fixed and whether it can gate: code
-# in a submodule is external, the configuration's build directory is generated, and everything
-# else tracked here is first-party, third-party code copied in included. REUSE.toml declares the
-# licence and origin of that copied code. analysis/ holds the agreed configurations, the cppcheck
-# suppressions and the accepted coverage gaps.
+# Every run analyses every translation unit a configuration compiles, whoever owns it, at every
+# severity. Ownership follows Zephyr's convention and is read from the path: code in a submodule is
+# external, the configuration's build directory is generated, and everything else is first-party,
+# third-party code copied in included. It decides where a finding is fixed, and nothing here
+# computes it: see Results below. REUSE.toml declares the licence and origin of copied code.
+# analysis/ holds the agreed configurations, the cppcheck suppressions and the accepted coverage
+# gaps.
 #
 # Results are the analysers' own SARIF. Nothing here passes or fails a finding: GitHub code
-# scanning merge protection does that, from the analyser's own security-severity (see
+# scanning merge protection does that, from the analyser's own security-severity and only on lines
+# a pull request changes, which submodule and build directory code never are (see
 # .github/workflows/sast.yml). These targets fail on a missing tool, an empty or incomplete
-# database, a path that fits no ownership class, and a coverage failure outside
-# analysis/coverage-gaps.json, because each of those makes a clean result a property of the run
-# rather than of the code.
+# database, and a coverage failure outside analysis/coverage-gaps.json, because each of those makes
+# a clean result a property of the run rather than of the code.
 
 SAST_TOOLS_DIR ?= $(PROJECT_BASE)/build/sast-tools
 CPPCHECK_VERSION ?= 2.22.0
@@ -331,18 +331,9 @@ SAST_ENV = PATH="$(SAST_BIN):$$PATH" PYTHONPATH="$(SAST_TOOLS_DIR)/python"
 ANALYSIS_POLICY = $(PROJECT_BASE)/analysis
 CPPCHECK_SUPPRESSIONS = $(ANALYSIS_POLICY)/cppcheck-suppressions.txt
 
-# Setting BASE, the ref a pull request merges into, makes a run a pull-request run: only the
-# first-party translation units the diff reaches through their include sets, plus one includer of
-# each changed first-party header none of those includes, at CPPCHECK_ENABLE, the severities that
-# can gate, split into SAST_SHARDS parts of which this run takes part SAST_SHARD. Unset, a run is a
-# full one: every translation unit at every severity. MISRA is misra-<cfg>.
-BASE ?=
-SAST_SHARDS ?= 1
-SAST_SHARD ?= 0
-CPPCHECK_ENABLE ?= warning
-CPPCHECK_ENABLE_FULL = warning,style,performance,portability
+CPPCHECK_ENABLE ?= warning,style,performance,portability
 
-# The agreed configurations, named as in analysis/configurations.json. For each: its build
+# The agreed configurations. For each: its build
 # directory, the directory its make line runs from, that line's variables, the target that builds
 # it here, and any part of its build directory that is another configuration's.
 #
@@ -401,8 +392,7 @@ SAST_DIR = $(SAST_BUILD_$*)/sast
 # the command line or in the environment are passed through, because the image starts with neither.
 ifeq ($(RUN_IN_DOCKER), 1)
 SAST_PASS_VARS = SAST_TOOLS SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
-  CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS BASE SAST_SHARDS \
-  SAST_SHARD CPPCHECK_ENABLE
+  CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS CPPCHECK_ENABLE
 SAST_PASS = $(strip $(foreach v,$(SAST_PASS_VARS),\
   $(if $(filter command line environment,$(origin $(v))),$(v)="$($(v))")))
 SAST_TOOLS_MOUNT = $(if $(wildcard $(SAST_TOOLS)/pyproject.toml),\
@@ -453,17 +443,16 @@ endif
 
 # Help lists these per configuration; <cfg> is one of $(SAST_CONFIGS).
 #> build-<cfg>                   Build the configuration
-#> compile-commands-<cfg>        compile_commands.json and includes.json into <build dir>/sast, checked
+#> compile-commands-<cfg>        compile_commands.json into <build dir>/sast, checked
 #> check-compile-commands-<cfg>  Fail if the database does not explain every object the build produced
-#> sast-pr-scope-<cfg>           List the units a pull request reaches, BASE=<ref it merges into>
-#> cppcheck-<cfg>                cppcheck full run; with BASE=<ref>, the pull-request run
+#> cppcheck-<cfg>                cppcheck over every unit
 #> check-cppcheck-<cfg>          Fail on a coverage failure outside analysis/coverage-gaps.json
 #> misra-<cfg>                   cppcheck's MISRA addon over every unit, report only, into <build dir>/sast/report
-#> codechecker-<cfg>             CodeChecker with the Clang Static Analyzer; with BASE=<ref>, the pull-request run
-#> check-codechecker-<cfg>       Fail unless CodeChecker analysed every unit of its run
+#> codechecker-<cfg>             CodeChecker with the Clang Static Analyzer over every unit
+#> check-codechecker-<cfg>       Fail unless CodeChecker analysed every unit
 #> fanalyzer-<cfg>               GCC -fanalyzer, ARM configurations only
-SAST_TARGETS = build compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck \
-  misra codechecker check-codechecker
+SAST_TARGETS = build compile-commands check-compile-commands cppcheck check-cppcheck misra \
+  codechecker check-codechecker
 .PHONY: $(foreach t,$(SAST_TARGETS),$(addprefix $(t)-,$(SAST_CONFIGS))) \
   $(addprefix fanalyzer-,$(SAST_CONFIGS))
 
@@ -475,10 +464,7 @@ $(addprefix build-,$(SAST_CONFIGS)): build-%:
 # One entry per translation unit the build compiles with its C compiler, from the build's own make
 # line. The completeness check then reconciles it against the object files the build produced,
 # accounting for assembly the assembler compiles, which compiledb does not record, and for objects
-# a deleted source left behind; and it writes each unit's include set from the build's dependency
-# files, classifying every unit and every included file by ownership, so a path that fits no class
-# fails here. Build the configuration first: the check needs its objects, and the include sets
-# need its dependency files.
+# a deleted source left behind. Build the configuration first: the check needs its objects.
 #
 # MAKEFLAGS is cleared so nothing from this make's own command line, job server or dry-run flag
 # reaches the replayed make line.
@@ -495,8 +481,7 @@ else
 	@grep -q '"file"' $(SAST_DIR)/compile_commands.json || { \
 	  echo "$(SAST_DIR)/compile_commands.json has no entries: compiledb recorded nothing."; exit 1; }
 	$(SAST_ENV) sast-compdb --check-db $(SAST_DIR)/compile_commands.json \
-	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*) --root $(PROJECT_BASE) \
-	  --includes-out $(SAST_DIR)/includes.json --configuration $*
+	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*)
 endif
 
 $(addprefix check-compile-commands-,$(SAST_CONFIGS)): check-compile-commands-%:
@@ -506,28 +491,7 @@ else
 	$(call sast_require,$(SAST_BIN)/sast-compdb)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
 	$(SAST_ENV) sast-compdb --check-db $(SAST_DIR)/compile_commands.json \
-	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*) --root $(PROJECT_BASE)
-endif
-
-# --- Analysis scope from the manifest chain
-#
-# The manifest chain is the authority for what is declared: frozen Python modules, and user C module
-# directories where the pin supports declaring them. The compilation database is the authority for
-# what is actually compiled. Neither supersedes the other, so the resolver cross-checks itself
-# against the database and reports disagreement rather than reconciling it silently. Ownership of
-# what it resolves comes from the same git conventions as the analysers'.
-SCOPE_DIR ?= $(PROJECT_BASE)/build/scope
-
-.PHONY: scope check-scope
-scope:  ## Resolve analysis scope from the manifest chain, for every agreed configuration
-check-scope:  ## Fail if the manifest chain declares anything the recorded scope does not cover
-scope check-scope:
-ifeq ($(RUN_IN_DOCKER), 1)
-	$(SAST_DOCKER)
-else
-	$(call sast_require,$(SAST_BIN)/sast-scope)
-	$(SAST_ENV) sast-scope --all $(ANALYSIS_POLICY)/configurations.json \
-	  --root $(PROJECT_BASE) --out $(SCOPE_DIR) $(if $(filter check-scope,$@),--check)
+	  --build-dir $(SAST_BUILD_$*) $(SAST_EXCLUDE_$*)
 endif
 
 # --- Licence and origin of copied code
@@ -553,88 +517,48 @@ endif
 # paths, and the forced predefines header is suppressed that way, since under -rp an absolute
 # suppression path silently matches nothing.
 #
-# $(1) inputs directory, $(2) SARIF file stem, $(3) analysis cache stem, $(4) severities,
-# $(5) further arguments. A run that selected nothing still analyses an empty file, so the
-# configuration's category receives a valid SARIF from the tool itself rather than none.
+# $(1) inputs directory, $(2) SARIF file stem, $(3) analysis cache stem, $(4) further arguments.
 define cppcheck_groups
-	@set -e; n=0; \
+	@set -e; \
 	for db in $(1)/compile_commands-*.json; do \
-	  test -e "$$db" || continue; \
-	  i=$${db##*/compile_commands-}; i=$${i%.json}; n=$$((n + 1)); \
+	  i=$${db##*/compile_commands-}; i=$${i%.json}; \
 	  mkdir -p $(3)-$$i; \
 	  echo "cppcheck: $$db"; \
 	  $(CPPCHECK) --project=$$db --include=$(1)/predefines-$$i.h --platform=$(1)/platform-$$i.xml \
-	    --enable=$(4) --inline-suppr -rp=$(PROJECT_BASE) \
+	    --enable=$(CPPCHECK_ENABLE) --inline-suppr -rp=$(PROJECT_BASE) \
 	    --suppress="*:$(patsubst $(PROJECT_BASE)/%,%,$(1))/predefines-$$i.h" \
-	    --suppressions-list=$(CPPCHECK_SUPPRESSIONS) $(5) \
+	    --suppressions-list=$(CPPCHECK_SUPPRESSIONS) $(4) \
 	    --cppcheck-build-dir=$(3)-$$i -j$(JOBS) \
 	    --output-format=sarif --output-file=$(2)-$$i.sarif; \
-	done; \
-	if [ $$n -eq 0 ]; then \
-	  echo "cppcheck: no translation unit selected in $(1); analysing an empty file."; \
-	  : > $(1)/empty.c; \
-	  $(CPPCHECK) $(1)/empty.c -rp=$(PROJECT_BASE) \
-	    --output-format=sarif --output-file=$(2)-empty.sarif; \
-	fi
+	done
 endef
 
-define sast_pr_scope
-	@test -n "$(BASE)" || { echo "BASE is not set: name the ref the pull request merges into, e.g. BASE=origin/main"; exit 1; }
-	@mkdir -p $(SAST_DIR)/pr
-	$(SAST_ENV) sast-pr-scope --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
-	  --build-dir $(SAST_BUILD_$*) --base $(BASE) --out $(SAST_DIR)/pr/compile_commands.json \
-	  --report $(SAST_DIR)/pr/scope.json --shards $(SAST_SHARDS) --shard $(SAST_SHARD)
-endef
-
-$(addprefix sast-pr-scope-,$(SAST_CONFIGS)): sast-pr-scope-%:
-ifeq ($(RUN_IN_DOCKER), 1)
-	$(SAST_DOCKER)
-else
-	$(call sast_require,$(SAST_BIN)/sast-pr-scope)
-	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
-	$(sast_pr_scope)
-endif
-
-# A pull-request run analyses the selected units at CPPCHECK_ENABLE (warning by default, the
-# lowest severity cppcheck tags High). A full run analyses every unit of the database, whoever owns
-# it, at every severity. Nothing is suppressed by ownership on either run: results in submodule and
-# build directory code are uploaded and stay visible, and they cannot gate because merge protection
-# acts only on lines a pull request changes, which those never are.
-#
-# The run's kind is recorded beside its SARIF, so the coverage check judges the run that made the
-# SARIF rather than whatever BASE says when it is invoked.
+# Every unit of the database, whoever owns it, at CPPCHECK_ENABLE. Nothing is suppressed by
+# ownership: results in submodule and build directory code are uploaded and stay visible, and they
+# cannot gate because merge protection acts only on lines a pull request changes. The complete
+# marker is written last, so the coverage check refuses a run that stopped part way.
 $(addprefix cppcheck-,$(SAST_CONFIGS)): cppcheck-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
-	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-pr-scope))
+	$(call sast_require,$(SAST_BIN)/sast-cppcheck-inputs)
 	$(sast_require_cppcheck)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
-	$(call sast_require_file,$(SAST_DIR)/includes.json)
-	@rm -rf $(SAST_DIR)/pr $(SAST_DIR)/full $(SAST_DIR)/cppcheck/*.sarif $(SAST_DIR)/cppcheck/run
-	@mkdir -p $(SAST_DIR)/cppcheck
-ifneq ($(BASE),)
-	$(sast_pr_scope)
-	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/pr/compile_commands.json $(SAST_DIR)/pr/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/pr/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/pr,$(CPPCHECK_ENABLE),)
-	@echo pr > $(SAST_DIR)/cppcheck/run
-else
-	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/full,$(CPPCHECK_ENABLE_FULL),)
-	@echo full > $(SAST_DIR)/cppcheck/run
-endif
+	@rm -rf $(SAST_DIR)/cppcheck/inputs $(SAST_DIR)/cppcheck/*.sarif $(SAST_DIR)/cppcheck/complete
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/cppcheck/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/cppcheck/inputs,$(SAST_DIR)/cppcheck/results,$(SAST_DIR)/cppcheck/cache/analysis,)
+	@touch $(SAST_DIR)/cppcheck/complete
 endif
 
-# MISRA over every unit of the database, whoever owns it, with cppcheck's MISRA addon at every
-# severity, since cppcheck filters addon results by severity and MISRA's style results need the
-# full set to get through. Report-only: the results carry no security-severity and never gate, and
-# they stay in the configuration's report/ directory, a CI artefact, rather than going to code
-# scanning, which rejects a run of more than 25,000 results and displays 5,000; MISRA over every
-# unit runs to tens of thousands. Its own target, and its own CI job, because the addon makes it
-# several times slower than the analysis that gates. It keeps its own cppcheck build directory,
-# since cppcheck's per-unit record differs with and without the addon and each would invalidate the
-# other's. Its coverage is asserted as the full run's is, which also fails the target when the addon
-# aborts, since cppcheck reports that as an internalError result and exits 0.
+# MISRA over every unit of the database, whoever owns it, with cppcheck's MISRA addon. Report-only:
+# the results carry no security-severity and never gate, and they stay in the configuration's
+# report/ directory, a CI artefact, rather than going to code scanning, which rejects a run of more
+# than 25,000 results and displays 5,000; MISRA over every unit runs to tens of thousands. Its own
+# target, and its own CI job, because the addon makes it several times slower than the analysis
+# that gates. It keeps its own inputs and cppcheck build directory, since cppcheck's per-unit record
+# differs with and without the addon and each would invalidate the other's. Its coverage is
+# asserted as cppcheck's is, which also fails the target when the addon aborts, since cppcheck
+# reports that as an internalError result and exits 0.
 $(addprefix misra-,$(SAST_CONFIGS)): misra-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
@@ -642,35 +566,31 @@ else
 	$(call sast_require,$(addprefix $(SAST_BIN)/,sast-cppcheck-inputs sast-cppcheck-coverage))
 	$(sast_require_cppcheck)
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
-	@rm -rf $(SAST_DIR)/report
+	@rm -rf $(SAST_DIR)/report $(SAST_DIR)/misra/inputs
 	@mkdir -p $(SAST_DIR)/report
-	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/full/inputs
-	$(call cppcheck_groups,$(SAST_DIR)/full/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/cppcheck/cache/misra,$(CPPCHECK_ENABLE_FULL),--addon=misra)
+	$(SAST_ENV) sast-cppcheck-inputs $(SAST_DIR)/compile_commands.json $(SAST_DIR)/misra/inputs
+	$(call cppcheck_groups,$(SAST_DIR)/misra/inputs,$(SAST_DIR)/report/cppcheck,$(SAST_DIR)/misra/cache,--addon=misra)
 	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* --full --inputs $(SAST_DIR)/full/inputs \
-	  --cache-stem $(SAST_DIR)/cppcheck/cache/misra \
+	  --configuration $* --inputs $(SAST_DIR)/misra/inputs --cache-stem $(SAST_DIR)/misra/cache \
 	  --root $(PROJECT_BASE) $(SAST_DIR)/report/*.sarif
 endif
 
 # Configuration coverage, not findings. cppcheck's progress output does not show a unit was
 # analysed, so coverage is asserted from the results: no coverage-failure result outside the
-# accepted gaps. After a full run it also fails on an accepted gap that no longer occurs, so a gap
-# fixed by a tool upgrade is removed rather than left asserting a limitation that no longer exists.
-# An accepted gap accepts only the units it lists, which the build directories of the run's own
-# groups attribute, so a new unit reaching a known gap fails rather than going unanalysed.
+# accepted gaps. It also fails on an accepted gap that no longer occurs, so a gap fixed by a tool
+# upgrade is removed rather than left asserting a limitation that no longer exists. An accepted gap
+# accepts only the units it lists, which the build directories of the run's own groups attribute,
+# so a new unit reaching a known gap fails rather than going unanalysed.
 $(addprefix check-cppcheck-,$(SAST_CONFIGS)): check-cppcheck-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
 	$(call sast_require,$(SAST_BIN)/sast-cppcheck-coverage)
-	@run="$$(cat $(SAST_DIR)/cppcheck/run 2>/dev/null)"; \
-	case "$$run" in full) full=--full;; pr) full=;; *) \
-	  echo "$(SAST_DIR)/cppcheck/run is missing, so no cppcheck run finished. Run make cppcheck-$* first."; \
-	  exit 1;; esac; \
-	echo "checking the $$run run's SARIF"; \
+	@test -e $(SAST_DIR)/cppcheck/complete || { \
+	  echo "No cppcheck run of $* finished. Run make cppcheck-$* first."; exit 1; }
 	$(SAST_ENV) sast-cppcheck-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* $$full --inputs $(SAST_DIR)/$$run/inputs \
-	  --cache-stem $(SAST_DIR)/cppcheck/cache/$$run \
+	  --configuration $* --inputs $(SAST_DIR)/cppcheck/inputs \
+	  --cache-stem $(SAST_DIR)/cppcheck/cache/analysis \
 	  --root $(PROJECT_BASE) $(SAST_DIR)/cppcheck/*.sarif
 endif
 
@@ -681,8 +601,7 @@ endif
 # that job's default checker selection, CodeChecker's sensitive profile over the clangsa analyzer
 # alone, so a run here reproduces what the job reports. CodeChecker reads the database itself and
 # asks each entry's own compiler, arm-none-eabi-gcc or the host gcc, for its target and implicit
-# include directories, so clang parses each unit for the target it is built for. A pull-request run
-# analyses the units cppcheck's does, a full run every unit, with the same checkers.
+# include directories, so clang parses each unit for the target it is built for.
 #
 # The SARIF is CodeChecker's own export, which in this release names every file by its absolute
 # path (file://...) whatever --trim-path-prefix says. GitHub's upload relativises those against the
@@ -706,46 +625,33 @@ $(addprefix codechecker-,$(SAST_CONFIGS)): codechecker-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
-	$(call sast_require,$(SAST_BIN)/sast-pr-scope $(CODECHECKER) $(CLANG))
+	$(call sast_require,$(CODECHECKER) $(CLANG))
 	$(call sast_require_file,$(SAST_DIR)/compile_commands.json)
-	$(call sast_require_file,$(SAST_DIR)/includes.json)
 	@rm -rf $(SAST_DIR)/codechecker
 	@mkdir -p $(SAST_DIR)/codechecker
-ifneq ($(BASE),)
-	$(sast_pr_scope)
-	$(call codechecker_run,$(SAST_DIR)/pr/compile_commands.json)
-	@echo pr > $(SAST_DIR)/codechecker/run
-else
 	$(call codechecker_run,$(SAST_DIR)/compile_commands.json)
-	@echo full > $(SAST_DIR)/codechecker/run
-endif
+	@touch $(SAST_DIR)/codechecker/complete
 endif
 
-# Coverage, not findings: every unit of the run's database is in CodeChecker's own record of the
-# run (reports/metadata.json) as analysed, and none as failed outside the accepted gaps. Assembly
+# Coverage, not findings: every unit of the database is in CodeChecker's own record of the run
+# (reports/metadata.json) as analysed, and none as failed outside the accepted gaps. Assembly
 # units, which CodeChecker skips, are listed as not analysed.
 $(addprefix check-codechecker-,$(SAST_CONFIGS)): check-codechecker-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
 	$(call sast_require,$(SAST_BIN)/sast-codechecker-coverage)
-	@run="$$(cat $(SAST_DIR)/codechecker/run 2>/dev/null)"; \
-	case "$$run" in \
-	  full) full=--full; db=$(SAST_DIR)/compile_commands.json;; \
-	  pr) full=; db=$(SAST_DIR)/pr/compile_commands.json;; \
-	  *) echo "$(SAST_DIR)/codechecker/run is missing, so no CodeChecker run finished. Run make codechecker-$* first."; \
-	    exit 1;; esac; \
-	echo "checking the $$run run against $$db"; \
+	@test -e $(SAST_DIR)/codechecker/complete || { \
+	  echo "No CodeChecker run of $* finished. Run make codechecker-$* first."; exit 1; }
 	$(SAST_ENV) sast-codechecker-coverage --accepted $(ANALYSIS_POLICY)/coverage-gaps.json \
-	  --configuration $* $$full --db $$db --root $(PROJECT_BASE) \
+	  --configuration $* --db $(SAST_DIR)/compile_commands.json --root $(PROJECT_BASE) \
 	  $(SAST_DIR)/codechecker/reports/metadata.json
 endif
 
 # --- GCC -fanalyzer
 #
 # GCC's own analyser. Each database entry is replayed with the pinned GCC 15, which writes its
-# own SARIF to a named file per unit. Full runs only, and report-only until its findings are
-# triaged.
+# own SARIF to a named file per unit. Report-only until its findings are triaged.
 $(addprefix fanalyzer-,$(SAST_ARM_CONFIGS)): fanalyzer-%:
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
@@ -764,23 +670,21 @@ $(addprefix fanalyzer-,$(filter-out $(SAST_ARM_CONFIGS),$(SAST_CONFIGS))): fanal
 # The unsuffixed names are the firmware configuration for the current PORT and BOARD.
 SAST_FW = $(PORT)-$(BOARD)
 
-.PHONY: compile-commands check-compile-commands sast-pr-scope cppcheck check-cppcheck misra \
-  codechecker check-codechecker fanalyzer
+.PHONY: compile-commands check-compile-commands cppcheck check-cppcheck misra codechecker \
+  check-codechecker fanalyzer
 compile-commands:  ## Generate the firmware configuration's compilation database (build it first)
 compile-commands: compile-commands-$(SAST_FW)
 check-compile-commands:  ## Reconcile the firmware configuration's database against its build output
 check-compile-commands: check-compile-commands-$(SAST_FW)
-sast-pr-scope:  ## List the firmware configuration's units a pull request reaches (BASE=<ref>)
-sast-pr-scope: sast-pr-scope-$(SAST_FW)
-cppcheck:  ## Analyse the firmware configuration with cppcheck (BASE=<ref> for a pull-request run)
+cppcheck:  ## Analyse the firmware configuration with cppcheck
 cppcheck: cppcheck-$(SAST_FW)
 check-cppcheck:  ## Fail on a coverage failure in the firmware configuration outside the accepted gaps
 check-cppcheck: check-cppcheck-$(SAST_FW)
 misra:  ## MISRA over the firmware configuration's every unit, report only
 misra: misra-$(SAST_FW)
-codechecker:  ## Analyse the firmware configuration with CodeChecker (BASE=<ref> for a pull-request run)
+codechecker:  ## Analyse the firmware configuration with CodeChecker
 codechecker: codechecker-$(SAST_FW)
-check-codechecker:  ## Fail unless CodeChecker analysed every unit of the firmware configuration's run
+check-codechecker:  ## Fail unless CodeChecker analysed every unit of the firmware configuration
 check-codechecker: check-codechecker-$(SAST_FW)
 fanalyzer:  ## Analyse the firmware configuration with GCC -fanalyzer
 fanalyzer: fanalyzer-$(SAST_FW)
