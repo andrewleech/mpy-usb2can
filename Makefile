@@ -304,8 +304,8 @@ tools/typings/VERSIONS:
 # external, the configuration's build directory is generated, and everything else is first-party,
 # third-party code copied in included. It decides where a finding is fixed, and nothing here
 # computes it: see Results below. REUSE.toml declares the licence and origin of copied code.
-# analysis/ holds the agreed configurations, the cppcheck suppressions and the accepted coverage
-# gaps.
+# analysis/ holds the cppcheck suppressions and the accepted coverage gaps; the agreed
+# configurations are SAST_CONFIGS below.
 #
 # Results are the analysers' own SARIF. Nothing here passes or fails a finding: GitHub code
 # scanning merge protection does that, from the analyser's own security-severity and only on lines
@@ -331,7 +331,9 @@ SAST_ENV = PATH="$(SAST_BIN):$$PATH" PYTHONPATH="$(SAST_TOOLS_DIR)/python"
 ANALYSIS_POLICY = $(PROJECT_BASE)/analysis
 CPPCHECK_SUPPRESSIONS = $(ANALYSIS_POLICY)/cppcheck-suppressions.txt
 
-CPPCHECK_ENABLE ?= warning,style,performance,portability
+# Fixed, so a local run, a pull request and a push report the same set. The MISRA addon needs style:
+# cppcheck filters addon results by severity, and MISRA's are style.
+override CPPCHECK_ENABLE = warning,style,performance,portability
 
 # The agreed configurations. For each: its build
 # directory, the directory its make line runs from, that line's variables, the target that builds
@@ -392,7 +394,7 @@ SAST_DIR = $(SAST_BUILD_$*)/sast
 # the command line or in the environment are passed through, because the image starts with neither.
 ifeq ($(RUN_IN_DOCKER), 1)
 SAST_PASS_VARS = SAST_TOOLS SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
-  CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS CPPCHECK_ENABLE
+  CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS
 SAST_PASS = $(strip $(foreach v,$(SAST_PASS_VARS),\
   $(if $(filter command line environment,$(origin $(v))),$(v)="$($(v))")))
 SAST_TOOLS_MOUNT = $(if $(wildcard $(SAST_TOOLS)/pyproject.toml),\
@@ -599,9 +601,15 @@ endif
 # A path-sensitive analyser beside cppcheck, and the engine of GitLab Advanced SAST's C/C++ job
 # (gitlab-advanced-sast-cpp, analyzer image clangsa): the same CodeChecker and clang releases and
 # that job's default checker selection, CodeChecker's sensitive profile over the clangsa analyzer
-# alone, so a run here reproduces what the job reports. CodeChecker reads the database itself and
-# asks each entry's own compiler, arm-none-eabi-gcc or the host gcc, for its target and implicit
-# include directories, so clang parses each unit for the target it is built for.
+# alone. CodeChecker reads the database itself and asks each entry's own compiler,
+# arm-none-eabi-gcc or the host gcc, for its target and implicit include directories, so clang
+# parses each unit for the target it is built for. It is not the unit exactly as built: CodeChecker
+# drops -DNDEBUG by design, so assert() is live and the analyser assumes every assertion holds, and
+# clang's own predefines (__GNUC__ 4) and type model (enum size, int32_t) select some different
+# code than the image's gcc does. GitLab's job has the same behaviour. For the host configurations
+# a run here reports what the job would for the same database. GitLab's clangsa image carries no
+# arm-none-eabi-gcc, so for the ARM configurations that job could not analyse this database as it
+# stands, and a run here is not a reproduction of it.
 #
 # The SARIF is CodeChecker's own export, which in this release names every file by its absolute
 # path (file://...) whatever --trim-path-prefix says. GitHub's upload relativises those against the

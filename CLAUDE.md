@@ -120,10 +120,12 @@ CodeChecker driving the Clang Static Analyzer is the engine of GitLab Advanced S
 (`gitlab-advanced-sast-cpp`, analyzer image `clangsa`). `make codechecker-<cfg>` runs the releases
 that job's image carries, CodeChecker 6.25.1 and clang 20.1.8, with its default checker selection,
 CodeChecker's `sensitive` profile over the `clangsa` analyzer alone, over the same compilation
-database, so it reports what that job would, without GitLab's own image, which is licensed under the
-GitLab EE licence, and on an instance too old to have Advanced SAST. CodeChecker asks each entry's
-compiler (`arm-none-eabi-gcc` or the host `gcc`) for its target and implicit include directories,
-so clang parses the ARM units for `arm-none-eabi`. Where clang cannot compile a unit that GCC
+database, without GitLab's own image, which is licensed under the GitLab EE licence, and on an
+instance too old to have Advanced SAST. CodeChecker asks each entry's compiler (`arm-none-eabi-gcc`
+or the host `gcc`) for its target and implicit include directories, so clang parses the ARM units
+for `arm-none-eabi`. For the host configurations it reports what that job would. For the ARM
+configurations it does not: GitLab's `clangsa` image has no `arm-none-eabi-gcc`, and without it
+CodeChecker fails every unit (measured on the bootloader: `unknown target CPU cortex-m33`). Where clang cannot compile a unit that GCC
 compiles, CodeChecker records the unit as failed with clang's error, and the unit is not analysed:
 `make check-codechecker-<cfg>` fails unless every unit of the run's database is in CodeChecker's
 record of the run (`codechecker/reports/metadata.json`) as analysed, or as failed on an error that
@@ -195,6 +197,12 @@ not SARIF, so on GitLab the findings neither appear there nor block a merge requ
   inline assembly in a naked function, which GCC accepts, so MicroPython's `ports/stm32/mboot/main.c`
   (bootloader) and `ports/stm32/powerctrl.c` (firmware) are not analysed by it; both are accepted
   gaps in `analysis/coverage-gaps.json`, and cppcheck and `-fanalyzer` still analyse them.
+- CodeChecker analyses each unit for its target but not exactly as built: it drops `-DNDEBUG`
+  by design, which every configuration except mpy-cross carries, so `assert()` is live and the
+  analyser assumes every assertion holds, and clang's own predefines (`__GNUC__` 4, so MicroPython
+  takes its pre-GCC-5 overflow and fallthrough code) and type model (enum size, `int32_t`) differ
+  from the image's gcc. GitLab's job does the same. Restoring `-DNDEBUG` is an open engineer
+  decision (SAST-17 item 12).
 - CodeChecker 6.25.1's SARIF names files by absolute path. GitHub's upload relativises them against
   the analysis job's checkout path; a local run's SARIF keeps the local absolute paths.
 - cppcheck's MISRA addon implements MISRA C:2012 partially; its results carry rule numbers only.

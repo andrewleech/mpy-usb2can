@@ -12,8 +12,10 @@ name: SAST
 # and the upload does not wait for it.
 #
 # CodeChecker runs the Clang Static Analyzer at the releases GitLab Advanced SAST's C/C++ job runs
-# (CodeChecker 6.25.1, clang 20.1.8) with that job's default checkers, so its results are what that
-# job would report for the same database.
+# (CodeChecker 6.25.1, clang 20.1.8) with that job's default checkers. For the host configurations
+# its results are what that job would report for the same database; for the ARM configurations they
+# are not, since GitLab's analyzer image has no arm-none-eabi-gcc for CodeChecker to take the
+# target from.
 #
 # Nothing in this workflow decides whether a finding blocks a merge. The upload job sends each
 # configuration's SARIF to code scanning under its own category, cppcheck/<configuration>,

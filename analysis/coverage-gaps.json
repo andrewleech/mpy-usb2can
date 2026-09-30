@@ -174,7 +174,7 @@
       ],
       "tool": "CodeChecker 6.25.1, clang 20.1.8",
       "added": "2026-10-01",
-      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_application() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the bootloader's main.c, which holds the whole of mboot's control flow,; cppcheck and GCC -fanalyzer do.",
+      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_application() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the bootloader's main.c, which holds most of mboot's control flow; cppcheck and GCC -fanalyzer do.",
       "configurations": [
         "stm32-USB2CAN_NUCLEO_H563ZI-mboot"
       ]
