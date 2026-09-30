@@ -4,10 +4,13 @@
     "one rather than staying red on an old one. A gate that is permanently failing is a gate nobody",
     "reads.",
     "",
-    "The check (make check-cppcheck-<configuration>) reads cppcheck's own SARIF. A result whose rule",
-    "is a coverage failure (preprocessorErrorDirective, syntaxError, internalError, internalAstError,",
-    "cppcheckError, instantiationError, missingFile) fails it unless an entry here matches it on id,",
+    "The check (make check-cppcheck-<configuration>) reads cppcheck's own SARIF and build records. A",
+    "result whose rule is one of cppcheck's critical errors (cppcheckError, cppcheckLimit,",
+    "directiveAsMacroParameter, includeNestedTooDeeply, internalAstError, instantiationError,",
+    "internalError, missingFile, preprocessorErrorDirective, syntaxError, unhandledChar, unknownMacro),",
+    "each of which ends the analysis of its unit, fails it unless an entry here matches it on id,",
     "repository-relative file and line, and names the configuration being checked in configurations.",
+    "A suppression does not hide one: the check reads the units' build records as well as the SARIF.",
     "An entry is only expected to match, and only counted stale, in the configurations it names: a",
     "configuration that does not compile the file cannot reproduce the gap.",
     "",
@@ -136,7 +139,7 @@
       ],
       "tool": "Cppcheck 2.22.0",
       "added": "2026-09-14",
-      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One unit of the mbedtls submodule is unanalysed. Giving cppcheck those headers is not the fix. In the compiler's own search order it costs 299 of this configuration's 318 units, because simplecpp ignores #include_next, so GCC's <stdint.h> never reaches the C library's and MP_INT_MAX is not resolved. With the C library's directories first this gap and the modselect.c one clear, but 16 units stop at /usr/include/math.h:935, where std.cfg's FP_NAN macros clash with glibc's enum, and 185 with --library=posix,gnu as well. Measured on upstream MicroPython 762ba4b with cppcheck 2.22.0: planning/results/UP-05/cppcheck-usage-audit-2026-09-30/ in the SAST programme tree, project-matrix.out and project-matrix-nolibs.out."
+      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One unit of the mbedtls submodule is unanalysed. Giving cppcheck those headers is not the fix. In the compiler's own search order it costs 299 of this configuration's 318 units, at py/mpconfig.h's integer-width checks, for two measured reasons: simplecpp ignores #include_next, so GCC's <stdint.h> never reaches the C library's and SIZE_MAX and the like stay undefined; and with this pipeline's limit-macro fallbacks supplied, GCC's <limits.h> redefines ULONG_MAX as (LONG_MAX * 2UL + 1UL), which cppcheck's #if evaluates wrongly, so '#error Unexpected SIZE_MAX value' is reached. With the C library's directories first, this gap and the modselect.c one clear, but 16 units stop at /usr/include/math.h:935, where std.cfg's FP_NAN macros clash with glibc's enum, and 185 units stop with --library=posix,gnu as well. Measured on upstream MicroPython 762ba4b with cppcheck 2.22.0, in the SAST programme tree: planning/results/UP-05/cppcheck-usage-audit-2026-09-30/ (project-matrix.out, project-matrix-nolibs.out) and planning/results/SAST-08/rebuild-fix/pipeline-predefines-with-system-headers/."
     },
     {
       "id": "preprocessorErrorDirective",
