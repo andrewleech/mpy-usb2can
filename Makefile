@@ -603,11 +603,13 @@ endif
 # that job's default checker selection, CodeChecker's sensitive profile over the clangsa analyzer
 # alone. CodeChecker reads the database itself and asks each entry's own compiler,
 # arm-none-eabi-gcc or the host gcc, for its target and implicit include directories, so clang
-# parses each unit for the target it is built for. It is not the unit exactly as built: CodeChecker
-# drops -DNDEBUG by design, so assert() is live and the analyser assumes every assertion holds, and
-# clang's own predefines (__GNUC__ 4) and type model (enum size, int32_t) select some different
-# code than the image's gcc does. GitLab's job has the same behaviour. For the host configurations
-# a run here reports what the job would for the same database. GitLab's clangsa image carries no
+# parses each unit for the target it is built for. CodeChecker drops -DNDEBUG from every unit by
+# design, which leaves assert() live so the analyser assumes every assertion holds and reports
+# less. When the database's units are built with -DNDEBUG (every configuration's are, or none)
+# it is passed back through --saargs, so assertion-guarded paths are analysed as built. GitLab's
+# job does not do this and reports fewer results than a run here. clang's own predefines
+# (__GNUC__ 4) and type model (enum size, int32_t) still select some different code than the
+# image's gcc does. For the host configurations a run here otherwise reports what the job would. GitLab's clangsa image carries no
 # arm-none-eabi-gcc, so for the ARM configurations that job could not analyse this database as it
 # stands, and a run here is not a reproduction of it.
 #
@@ -621,7 +623,9 @@ endif
 CODECHECKER_ENV = env -u PYTHONPATH -u PYTHONHOME CC_ANALYZER_BIN="clangsa:$(CLANG)"
 
 define codechecker_run
-	rc=0; $(CODECHECKER_ENV) $(CODECHECKER) analyze $(1) --analyzers clangsa --enable=sensitive \
+	saargs=; if grep -q -- '-DNDEBUG' $(1); then mkdir -p $(SAST_DIR)/codechecker; \
+	  echo -DNDEBUG > $(SAST_DIR)/codechecker/saargs; saargs="--saargs $(SAST_DIR)/codechecker/saargs"; fi; \
+	rc=0; $(CODECHECKER_ENV) $(CODECHECKER) analyze $(1) --analyzers clangsa --enable=sensitive $$saargs \
 	  --jobs $(JOBS) --output $(SAST_DIR)/codechecker/reports || rc=$$?; \
 	test $$rc -eq 0 -o $$rc -eq 3 || { echo "CodeChecker analyze exited $$rc."; exit 1; }
 	rc=0; $(CODECHECKER_ENV) $(CODECHECKER) parse $(SAST_DIR)/codechecker/reports --export sarif \

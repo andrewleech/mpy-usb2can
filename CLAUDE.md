@@ -197,12 +197,11 @@ not SARIF, so on GitLab the findings neither appear there nor block a merge requ
   inline assembly in a naked function, which GCC accepts, so MicroPython's `ports/stm32/mboot/main.c`
   (bootloader) and `ports/stm32/powerctrl.c` (firmware) are not analysed by it; both are accepted
   gaps in `analysis/coverage-gaps.json`, and cppcheck and `-fanalyzer` still analyse them.
-- CodeChecker analyses each unit for its target but not exactly as built: it drops `-DNDEBUG`
-  by design, which every configuration except mpy-cross carries, so `assert()` is live and the
-  analyser assumes every assertion holds, and clang's own predefines (`__GNUC__` 4, so MicroPython
-  takes its pre-GCC-5 overflow and fallthrough code) and type model (enum size, `int32_t`) differ
-  from the image's gcc. GitLab's job does the same. Restoring `-DNDEBUG` is an open engineer
-  decision (SAST-17 item 12).
+- CodeChecker drops `-DNDEBUG` by design, which every configuration except mpy-cross carries; the
+  Makefile passes it back through `--saargs`, so assertion-guarded paths are analysed as built.
+  GitLab's job does not, and reports fewer results. clang's own predefines (`__GNUC__` 4, so
+  MicroPython takes its pre-GCC-5 overflow and fallthrough code) and type model (enum size,
+  `int32_t`) still differ from the image's gcc.
 - CodeChecker 6.25.1's SARIF names files by absolute path. GitHub's upload relativises them against
   the analysis job's checkout path; a local run's SARIF keeps the local absolute paths.
 - cppcheck's MISRA addon implements MISRA C:2012 partially; its results carry rule numbers only.
