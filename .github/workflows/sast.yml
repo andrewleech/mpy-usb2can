@@ -29,10 +29,9 @@ name: SAST
 # block here. The ruleset is a repository setting, not code; the gh api command that creates it is
 # in CLAUDE.md.
 #
-# The analysis tools are not in this repository. `make sast-tools` installs them from SAST_TOOLS,
-# a pip requirement for the degraves-sast package, which comes from the repository variable of the
-# same name, a local path or a VCS URL pinned to a commit. There is no default: an unset variable
-# fails every analysis job at its first step.
+# The analysis tools are not in this repository. `make sast-tools` installs the pinned analysers
+# and the mpy_analysis package from the micropython submodule, so every job fetches the submodules
+# before it installs the tools, and the tools are at the same commit as the code they analyse.
 #
 # The container is pinned by digest, the same image as the Makefile's IMAGE and .gitlab-ci.yml, and
 # the digest is part of the tools cache key, because cppcheck is built in and for that image and the
@@ -101,16 +100,9 @@ jobs:
             build_dir: src/micropython/mpy-cross/build
             fanalyzer: false
     env:
-      SAST_TOOLS: ${{ vars.SAST_TOOLS }}
       # -fanalyzer does not run on pull requests, so they do not fetch its toolchain.
       SAST_SKIP_ARM_GCC: ${{ github.event_name == 'pull_request' && '1' || '' }}
     steps:
-      - name: Require the analysis tools declaration
-        run: |
-          if [ -z "$SAST_TOOLS" ]; then
-            echo "::error::The repository variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...). Without it nothing can be analysed."
-            exit 1
-          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The build version comes from tags.
@@ -118,6 +110,8 @@ jobs:
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - name: Fetch submodules
+        run: make submodules
       # cppcheck is built from source, and the Arm toolchain and LLVM are large downloads, so all
       # are cached, keyed on their versions and the image they were built in. The cache is saved as
       # soon as the tools are installed, so a later failing step does not discard it.
@@ -139,8 +133,6 @@ jobs:
       - name: Record where the checkout is
         id: root
         run: echo "path=$PWD" >> "$GITHUB_OUTPUT"
-      - name: Fetch submodules
-        run: make submodules
       - name: Build
         run: make build-${{ matrix.configuration }}
       - name: Compilation database
@@ -193,22 +185,17 @@ jobs:
           - configuration: mpy-cross
             build_dir: src/micropython/mpy-cross/build
     env:
-      SAST_TOOLS: ${{ vars.SAST_TOOLS }}
       SAST_SKIP_ARM_GCC: '1'
       SAST_SKIP_CODECHECKER: '1'
     steps:
-      - name: Require the analysis tools declaration
-        run: |
-          if [ -z "$SAST_TOOLS" ]; then
-            echo "::error::The repository variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
-            exit 1
-          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - name: Fetch submodules
+        run: make submodules
       - name: Restore the analysis tools
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -218,8 +205,6 @@ jobs:
           restore-keys: sast-tools-${{ runner.os }}-${{ env.IMAGE_DIGEST }}-cppcheck-${{ env.CPPCHECK_VERSION }}-
       - name: Install the analysis tools
         run: make sast-tools
-      - name: Fetch submodules
-        run: make submodules
       - name: Build
         run: make build-${{ matrix.configuration }}
       - name: Compilation database
@@ -243,19 +228,14 @@ jobs:
     container: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
     timeout-minutes: 30
     env:
-      SAST_TOOLS: ${{ vars.SAST_TOOLS }}
       SAST_SKIP_ARM_GCC: '1'
       SAST_SKIP_CODECHECKER: '1'
     steps:
-      - name: Require the analysis tools declaration
-        run: |
-          if [ -z "$SAST_TOOLS" ]; then
-            echo "::error::The repository variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
-            exit 1
-          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
+      - name: Fetch submodules
+        run: make submodules
       - name: Restore the analysis tools
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

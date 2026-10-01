@@ -34,7 +34,7 @@ C static analysis runs per build configuration. The agreed configurations are
 them and the targets below.
 
 ```bash
-make sast-tools SAST_TOOLS=/path/to/sast   # install the analysers once, into build/sast-tools
+make sast-tools                    # install the analysers once, into build/sast-tools
 
 make build-<cfg>                    # build the configuration
 make compile-commands-<cfg>         # compilation database, checked against the build
@@ -57,8 +57,8 @@ cppcheck 2.22.0 built unmodified from its release archive, checked against a pin
 Arm GNU Toolchain 15.2.Rel1 for `-fanalyzer`, checked against Arm's published SHA-256; CodeChecker
 6.25.1 with every Python package it installs pinned by SHA-256, and clang 20.1.8 from the LLVM
 release archive, checked against a pinned SHA-256; compiledb; the REUSE tool; and the
-`degraves-sast` package from the degraves SAST tree. `SAST_TOOLS` is a pip requirement for that
-package, a path to a checkout or a VCS URL pinned to a full commit hash, and has no default. Every
+`mpy_analysis` package from the micropython submodule (`src/micropython/tools/mpy_analysis`), so
+the tools are at the same commit as the code they analyse. Every
 analysis target fails with the install command when a tool is missing, and cppcheck is checked
 against its pinned version.
 

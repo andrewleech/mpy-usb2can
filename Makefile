@@ -287,17 +287,14 @@ tools/typings/VERSIONS:
 # GCC -fanalyzer from the Arm GNU Toolchain $(ARM_GCC_ANALYZER_VERSION), CodeChecker
 # $(CODECHECKER_VERSION) driving the Clang Static Analyzer of LLVM $(LLVM_VERSION), both pinned by
 # SHA-256, compiledb for the compilation databases, and the REUSE tool for the licence
-# declarations. The degraves-sast package adds only what no accepted tool does: compiler
-# predefines for cppcheck, the database completeness check and the coverage checks. `make
-# sast-tools` installs all of it into $(SAST_TOOLS_DIR), inside the same pinned $(IMAGE) that
-# builds the firmware, and every target below runs there, so the database's compiler and the
-# analyser's derived type model come from the same compiler.
+# declarations. The mpy_analysis package, in the micropython checkout, adds only what no
+# accepted tool does: compiler predefines for cppcheck, the database completeness check and the
+# coverage checks. `make sast-tools` installs it and the analysers into $(SAST_TOOLS_DIR), inside
+# the same pinned $(IMAGE) that builds the firmware, and every target below runs there, so the
+# database's compiler and the analyser's derived type model come from the same compiler.
 #
-# SAST_TOOLS says where the package comes from, as a pip requirement: a path to a checkout of the
-# degraves SAST tree, or a VCS URL pinned to a commit (git+https://...@<40-hex commit>), so the
-# tools cannot change between two runs of the same commit here. It has no default because the
-# package has no published location yet, and a default pointing somewhere that does not exist
-# would fail later and less clearly.
+# The package comes from the micropython checkout the firmware is built from, so it is pinned to
+# the same commit as the code it analyses and needs no separate declaration.
 #
 # Every run analyses every translation unit a configuration compiles, whoever owns it, at every
 # severity. Ownership follows Zephyr's convention and is read from the path: code in a submodule is
@@ -389,24 +386,22 @@ SAST_ARM_CONFIGS = stm32-USB2CAN_NUCLEO_H563ZI stm32-USB2CAN_NUCLEO_H563ZI-mboot
 # directory removes them too. Expanded in a recipe, where $* is the configuration.
 SAST_DIR = $(SAST_BUILD_$*)/sast
 
-# Running inside the build image. The degraves-sast checkout named by SAST_TOOLS is mounted too
-# when it is a local directory, since the image otherwise sees only this project. Variables set on
-# the command line or in the environment are passed through, because the image starts with neither.
+# Running inside the build image. The image sees only this project, and the package is in it, so
+# there is nothing else to mount. Variables set on the command line or in the environment are
+# passed through, because the image starts with neither.
 ifeq ($(RUN_IN_DOCKER), 1)
-SAST_PASS_VARS = SAST_TOOLS SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
+SAST_PASS_VARS = SAST_TOOLS_DIR CPPCHECK_VERSION ARM_GCC_ANALYZER_VERSION \
   CODECHECKER_VERSION LLVM_VERSION SAST_SKIP_ARM_GCC SAST_SKIP_CODECHECKER JOBS
 SAST_PASS = $(strip $(foreach v,$(SAST_PASS_VARS),\
   $(if $(filter command line environment,$(origin $(v))),$(v)="$($(v))")))
-SAST_TOOLS_MOUNT = $(if $(wildcard $(SAST_TOOLS)/pyproject.toml),\
-  -v "$(abspath $(SAST_TOOLS)):$(abspath $(SAST_TOOLS))")
-SAST_DOCKER = @$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" $(SAST_TOOLS_MOUNT) \
+SAST_DOCKER = @$(DOCKER_ENV_FILTER) docker run --rm -v "$$(pwd):$$(pwd)" \
   -w "$$(pwd)" --user="$$(id -u):$$(id -g)" $(DOCKER_VERSION) $(IMAGE) make $@ $(SAST_PASS)
 endif
 
 # A missing tool fails with the command that installs it, never as an analysis of nothing.
 define sast_require
 	@for t in $(1); do test -x "$$t" || { echo "$$t is missing."; \
-	  echo "Install the analysis tools first: make sast-tools SAST_TOOLS=<pip requirement for degraves-sast>"; \
+	  echo "Install the analysis tools first: make sast-tools"; \
 	  exit 1; }; done
 endef
 
@@ -422,22 +417,17 @@ define sast_require_file
 endef
 
 .PHONY: sast-tools
-sast-tools:  ## Install the pinned analysers and the degraves-sast tools, from SAST_TOOLS=<pip requirement>
-	@test -n "$(SAST_TOOLS)" || { \
-	  echo "SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package, for"; \
-	  echo "example a checkout of the degraves SAST tree: make sast-tools SAST_TOOLS=/path/to/sast"; \
+sast-tools:  ## Install the pinned analysers and the mpy_analysis tools, from the micropython checkout
+	@test -f $(MICROPYTHON_BASE)/tools/mpy_analysis/pyproject.toml || { \
+	  echo "The mpy_analysis package is not in the micropython checkout at $(MICROPYTHON_BASE)."; \
+	  echo "Update the submodule to a commit that carries it, or pass MICROPYTHON_BASE to a checkout that does."; \
 	  exit 1; }
-	@case "$(SAST_TOOLS)" in *://*) \
-	  echo "$(SAST_TOOLS)" | grep -Eq '@[0-9a-f]{40}(#.*)?$$' || { \
-	    echo "SAST_TOOLS=$(SAST_TOOLS) names no commit, so the tools could differ between two runs."; \
-	    echo "Pin it to a full commit hash: git+https://host/sast.git@<40-hex commit>"; exit 1; };; \
-	esac
 ifeq ($(RUN_IN_DOCKER), 1)
 	$(SAST_DOCKER)
 else
 	@# --upgrade because pip --target leaves an existing install alone without it.
 	python3 -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade \
-	  --target $(SAST_TOOLS_DIR)/python "$(SAST_TOOLS)"
+	  --target $(SAST_TOOLS_DIR)/python $(MICROPYTHON_BASE)/tools/mpy_analysis
 	$(SAST_ENV) sast-install-tools --prefix $(SAST_TOOLS_DIR) --cppcheck $(CPPCHECK_VERSION) \
 	  $(if $(SAST_SKIP_ARM_GCC),--skip-arm-gcc,--arm-gcc $(ARM_GCC_ANALYZER_VERSION)) \
 	  $(if $(SAST_SKIP_CODECHECKER),--skip-codechecker,--codechecker $(CODECHECKER_VERSION) --llvm $(LLVM_VERSION))

@@ -13,9 +13,8 @@
 # fails when a tool is missing, a compilation database is empty or incomplete, or cppcheck or
 # CodeChecker could not analyse a unit outside analysis/coverage-gaps.json.
 #
-# SAST_TOOLS, the pip requirement for the degraves-sast package that provides the analysis tools,
-# comes from a CI/CD variable of the same name, a local path or a VCS URL pinned to a commit. There
-# is no default; unset, every job fails first.
+# The analysis tools come from the micropython submodule: `make sast-tools` installs the
+# mpy_analysis package from it, so each job fetches the submodules first.
 #
 # CodeChecker is GitLab Advanced SAST's C/C++ engine (the gitlab-advanced-sast-cpp job, analyzer
 # image clangsa), at the releases that job runs, CodeChecker 6.25.1 and clang 20.1.8, with its
@@ -90,18 +89,13 @@ sast:
     paths:
       - build/sast-tools/
   before_script:
-    - |
-      if [ -z "$SAST_TOOLS" ]; then
-        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...). Without it nothing can be analysed."
-        exit 1
-      fi
     - git config --global --add safe.directory '*'
     - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
     - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
     - export MICROPY_GIT_TAG MICROPY_GIT_HASH
   script:
-    - make sast-tools
     - make submodules
+    - make sast-tools
     - make build-$SAST_CONFIGURATION
     - make compile-commands-$SAST_CONFIGURATION
     - make cppcheck-$SAST_CONFIGURATION
@@ -158,18 +152,13 @@ misra:
       - build/sast-tools/
     policy: pull
   before_script:
-    - |
-      if [ -z "$SAST_TOOLS" ]; then
-        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
-        exit 1
-      fi
     - git config --global --add safe.directory '*'
     - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
     - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
     - export MICROPY_GIT_TAG MICROPY_GIT_HASH
   script:
-    - make sast-tools
     - make submodules
+    - make sast-tools
     - make build-$SAST_CONFIGURATION
     - make compile-commands-$SAST_CONFIGURATION
     - make misra-$SAST_CONFIGURATION
@@ -206,13 +195,9 @@ licences:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "web"
   before_script:
-    - |
-      if [ -z "$SAST_TOOLS" ]; then
-        echo "The CI/CD variable SAST_TOOLS is not set. It is the pip requirement for the degraves-sast package that provides the analysis tools (make sast-tools SAST_TOOLS=...)."
-        exit 1
-      fi
     - git config --global --add safe.directory '*'
   script:
+    - make submodules
     - make sast-tools
     - make check-reuse
 
