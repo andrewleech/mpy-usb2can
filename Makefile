@@ -609,8 +609,8 @@ endif
 # it is passed back through --saargs, so assertion-guarded paths are analysed as built. GitLab's
 # job does not do this and reports fewer results than a run here. clang's own predefines
 # (__GNUC__ 4) and type model (enum size, int32_t) still select some different code than the
-# image's gcc does. For the host configurations a run here otherwise reports what the job would. GitLab's clangsa image carries no
-# arm-none-eabi-gcc, so for the ARM configurations that job could not analyse this database as it
+# image's gcc does. For the host configurations a run here otherwise reports what the job would.
+# GitLab's clangsa image carries no arm-none-eabi-gcc, so for the ARM configurations that job could not analyse this database as it
 # stands, and a run here is not a reproduction of it.
 #
 # The SARIF is CodeChecker's own export, which in this release names every file by its absolute

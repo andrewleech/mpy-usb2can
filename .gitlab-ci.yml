@@ -20,8 +20,8 @@
 # CodeChecker is GitLab Advanced SAST's C/C++ engine (the gitlab-advanced-sast-cpp job, analyzer
 # image clangsa), at the releases that job runs, CodeChecker 6.25.1 and clang 20.1.8, with its
 # default checkers, on an instance without Advanced SAST and without running GitLab's own analyzer
-# image. For the host configurations the sast job here reports what that job would for the same
-# database. For the ARM configurations it does not: GitLab's image has no arm-none-eabi-gcc, which
+# image, plus the build's -DNDEBUG, which that job drops (Makefile). For the host configurations the
+# sast job here reports at least what that job would for the same database. For the ARM configurations it does not: GitLab's image has no arm-none-eabi-gcc, which
 # CodeChecker needs to set clang's target and include directories.
 #
 # Gap against GitHub: the results go no further than this job's artefacts. GitLab's Vulnerability

@@ -123,7 +123,7 @@ CodeChecker's `sensitive` profile over the `clangsa` analyzer alone, over the sa
 database, without GitLab's own image, which is licensed under the GitLab EE licence, and on an
 instance too old to have Advanced SAST. CodeChecker asks each entry's compiler (`arm-none-eabi-gcc`
 or the host `gcc`) for its target and implicit include directories, so clang parses the ARM units
-for `arm-none-eabi`. For the host configurations it reports what that job would. For the ARM
+for `arm-none-eabi`. For the host configurations it reports at least what that job would (it keeps the build's `-DNDEBUG`, which that job drops). For the ARM
 configurations it does not: GitLab's `clangsa` image has no `arm-none-eabi-gcc`, and without it
 CodeChecker fails every unit (measured on the bootloader: `unknown target CPU cortex-m33`). Where clang cannot compile a unit that GCC
 compiles, CodeChecker records the unit as failed with clang's error, and the unit is not analysed:
