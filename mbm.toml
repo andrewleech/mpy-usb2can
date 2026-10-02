@@ -16,6 +16,7 @@ branches = [
     { name = "feature/stm32-sched-wfe" },
     { name = "feature/stm32-can-rxring" },
     { name = "feature/mimxrt-usbd-runtime" },
+    { name = "feature/sast-compile-commands" },
     { name = "sast-tools" },
 ]
 
