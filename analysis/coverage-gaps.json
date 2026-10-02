@@ -1,0 +1,197 @@
+{
+  "comment": [
+    "Coverage gaps that are known, measured and accepted, so that the coverage check gates on a new",
+    "one rather than staying red on an old one. A gate that is permanently failing is a gate nobody",
+    "reads.",
+    "",
+    "The check (make check-cppcheck-<configuration>) reads cppcheck's own SARIF and build records. A",
+    "result whose rule is one of cppcheck's critical errors (cppcheckError, cppcheckLimit,",
+    "directiveAsMacroParameter, includeNestedTooDeeply, internalAstError, instantiationError,",
+    "internalError, missingFile, preprocessorErrorDirective, syntaxError, unhandledChar, unknownMacro)",
+    "or missingIncludeExplicit, a forced include cppcheck cannot open, each of which ends the analysis",
+    "of its unit, fails it unless an entry here matches it on id, repository-relative file and line,",
+    "and names the configuration being checked in configurations. A failure cppcheck reports without",
+    "a line is at line 1, as its SARIF gives it. A suppression does not hide one: the check reads the",
+    "units' build records as well as the SARIF.",
+    "An entry is only expected to match, and only counted stale, in the configurations it names: a",
+    "configuration that does not compile the file cannot reproduce the gap.",
+    "",
+    "The check also fails on an entry for its configuration that matched nothing, so that a gap fixed",
+    "by a tool upgrade is removed rather than left asserting a limitation that no longer exists.",
+    "",
+    "translation_units is exact: the check fails on any unit the gap costs that the entry does not",
+    "list. A gap in a header is reached by every unit that includes it, and cppcheck abandons each such",
+    "unit whole, so an entry that matched on the location alone would accept a unit added later without",
+    "analysing any of it. cppcheck's SARIF reports the result once however many units hit it, so the",
+    "check reads the units from cppcheck's own build directories.",
+    "",
+    "This is not a suppression list. A suppression hides a finding about the code; an entry here",
+    "records that the analyser could not read some of the code, which is the opposite claim and has",
+    "to stay visible in every summary.",
+    "",
+    "codechecker holds CodeChecker's gaps, with the same fields and meaning, checked by",
+    "make check-codechecker-<configuration> from CodeChecker's own record of the run",
+    "(codechecker/reports/metadata.json and its failed/ zips). The Clang Static Analyzer analyses only",
+    "what clang compiles, so a unit clang rejects is a failed unit; an entry matches it on id",
+    "(clangsa, the analyzer), and the repository-relative file and line of the first error clang",
+    "reported, and accepts only the translation_units it lists. accepted holds cppcheck's gaps."
+  ],
+  "accepted": [
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/py/grammar.h",
+      "line": 84,
+      "translation_units": [
+        "src/micropython/py/parse.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-14",
+      "reason": "Maximum AST depth exceeded. py/grammar.h is a table of nested DEF_RULE macros that expands into a single deeply nested initialiser, and cppcheck's parser has a depth limit the compiler does not. The parser, py/parse.c, is unanalysed in every configuration that compiles it.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX",
+        "unix-standard",
+        "mpy-cross"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/py/vmentrytable.h",
+      "line": 40,
+      "translation_units": [
+        "src/micropython/py/vm.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-14",
+      "reason": "AST broken, binary operator '=' without two operands. vmentrytable.h builds a computed-goto dispatch table out of GCC label addresses, which cppcheck's parser does not model. The interpreter loop, py/vm.c, is unanalysed. This is the most significant of these gaps: it is the core of the runtime. vm.c includes the header only with MICROPY_OPT_COMPUTED_GOTO, which the mimxrt and mpy-cross configurations leave off, so they compile vm.c without this gap.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "unix-standard"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/ports/stm32/systick.h",
+      "line": 47,
+      "translation_units": [
+        "src/micropython/ports/stm32/dma.c",
+        "src/micropython/ports/stm32/factoryreset.c",
+        "src/micropython/ports/stm32/main.c",
+        "src/micropython/ports/stm32/mpnetworkport.c",
+        "src/micropython/ports/stm32/sdram.c",
+        "src/micropython/ports/stm32/storage.c",
+        "src/micropython/ports/stm32/systick.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression. The line declares an array of function pointers sized by POW2_CEIL, whose expansion holds a bitwise or; 2.22.0 fails on any such declaration, reduced to `typedef void (*f)(int); f t[1 | 1];`. The compiler accepts it. Every unit that includes the header is unanalysed: seven units of the stm32 port, among them main.c, dma.c and storage.c.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/ports/mimxrt/systick.h",
+      "line": 49,
+      "translation_units": [
+        "src/micropython/ports/mimxrt/main.c",
+        "src/micropython/ports/mimxrt/mpnetworkport.c",
+        "src/micropython/ports/mimxrt/systick.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression: the same declaration and the same failure as the stm32 port's systick.h entry, in the mimxrt port's copy of the header. Three units of the mimxrt port, among them main.c, are unanalysed.",
+      "configurations": [
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/shared/runtime/sys_stdio_mphal.c",
+      "line": 155,
+      "translation_units": [
+        "src/micropython/shared/runtime/sys_stdio_mphal.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression. cppcheck's preprocessor leaves MP_DEFINE_CONST_OBJ_TYPE unexpanded: the macro selects its MP_DEFINE_CONST_OBJ_TYPE_NARGS_<n> variant by token pasting inside MP_DEFINE_CONST_OBJ_TYPE_EXPAND, and the selected name is not rescanned with the argument list that follows it, which GCC does. 2.21.0 and 2.22.0 both leave it unexpanded; 2.22.0 then fails to parse a static definition whose flags argument holds a binary operator, here MP_TYPE_FLAG_ITER_IS_STREAM, where 2.21.0 parsed it silently as a declaration. The unit, which defines the sys.stdin, stdout and stderr objects, is unanalysed.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI",
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX"
+      ]
+    },
+    {
+      "id": "internalAstError",
+      "file": "src/micropython/extmod/vfs_rom_file.c",
+      "line": 157,
+      "translation_units": [
+        "src/micropython/extmod/vfs_rom_file.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-30",
+      "reason": "Cppcheck 2.21.0 given the same inputs reports nothing here, so this is a 2.22.0 regression, with the same cause as the sys_stdio_mphal.c entry: a static MP_DEFINE_CONST_OBJ_TYPE with MP_TYPE_FLAG_ITER_IS_STREAM, which cppcheck 2.22.0 cannot parse once its preprocessor has left the macro unexpanded. The ROM filesystem's file object unit is unanalysed. The stm32 firmware compiles the unit with MICROPY_VFS_ROM off, which removes the definition, so it has no gap there.",
+      "configurations": [
+        "mimxrt-USB2CAN_SEEED_ARCH_MIX",
+        "unix-standard"
+      ]
+    },
+    {
+      "id": "preprocessorErrorDirective",
+      "file": "src/micropython/lib/mbedtls/library/platform_util.c",
+      "line": 256,
+      "configurations": [
+        "unix-standard"
+      ],
+      "translation_units": [
+        "src/micropython/lib/mbedtls/library/platform_util.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-14",
+      "reason": "mbedtls selects its millisecond clock on POSIX feature macros from <time.h> and <unistd.h>, and the analysis is not given the C library's headers. One unit of the mbedtls submodule is unanalysed. Giving cppcheck those headers is not the fix. In the compiler's own search order it costs 299 of this configuration's 318 units, at py/mpconfig.h's integer-width checks, for two measured reasons: simplecpp ignores #include_next, so GCC's <stdint.h> never reaches the C library's and SIZE_MAX and the like stay undefined; and with this pipeline's limit-macro fallbacks supplied, GCC's <limits.h> redefines ULONG_MAX as (LONG_MAX * 2UL + 1UL), which cppcheck's #if evaluates wrongly, so '#error Unexpected SIZE_MAX value' is reached. With the C library's directories first, this gap and the modselect.c one clear, but 16 units stop at /usr/include/math.h:935, where std.cfg's FP_NAN macros clash with glibc's enum, and 185 units stop with --library=posix,gnu as well. Measured on upstream MicroPython 762ba4b with cppcheck 2.22.0, in the SAST programme tree: planning/results/UP-05/cppcheck-usage-audit-2026-09-30/ (project-matrix.out, project-matrix-nolibs.out) and planning/results/SAST-08/rebuild-fix/pipeline-predefines-with-system-headers/."
+    },
+    {
+      "id": "preprocessorErrorDirective",
+      "file": "src/micropython/extmod/modselect.c",
+      "line": 52,
+      "configurations": [
+        "unix-standard"
+      ],
+      "translation_units": [
+        "src/micropython/extmod/modselect.c"
+      ],
+      "tool": "Cppcheck 2.22.0",
+      "added": "2026-09-14",
+      "reason": "The file asserts that its own POLL constants match <poll.h>'s, which is not resolved. Same cause and same measured trade-off as the mbedtls entry. One unit of the MicroPython submodule is unanalysed in this configuration. The stm32 and mimxrt configurations compile the unit without MICROPY_PY_SELECT_POSIX_OPTIMISATIONS, so the assertion is not reached there."
+    }
+  ],
+  "codechecker": [
+    {
+      "id": "clangsa",
+      "file": "src/micropython/ports/stm32/mboot/main.c",
+      "line": 1475,
+      "translation_units": [
+        "src/micropython/ports/stm32/mboot/main.c"
+      ],
+      "tool": "CodeChecker 6.25.1, clang 20.1.8",
+      "added": "2026-10-01",
+      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_application() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the bootloader's main.c, which holds most of mboot's control flow; cppcheck and GCC -fanalyzer do.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI-mboot"
+      ]
+    },
+    {
+      "id": "clangsa",
+      "file": "src/micropython/ports/stm32/powerctrl.c",
+      "line": 135,
+      "translation_units": [
+        "src/micropython/ports/stm32/powerctrl.c"
+      ],
+      "tool": "CodeChecker 6.25.1, clang 20.1.8",
+      "added": "2026-10-01",
+      "reason": "clang rejects any statement other than inline assembly in a naked function (error: non-ASM statement in naked function is not supported); GCC accepts it. branch_to_bootloader() is __attribute__((naked)) and ends with MP_UNREACHABLE, which py/mpconfig.h defines as __builtin_unreachable(). The Clang Static Analyzer does not analyse the stm32 port's power control unit; cppcheck and GCC -fanalyzer do.",
+      "configurations": [
+        "stm32-USB2CAN_NUCLEO_H563ZI"
+      ]
+    }
+  ]
+}

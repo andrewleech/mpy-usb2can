@@ -1,0 +1,211 @@
+# C static analysis, the same Make targets as .github/workflows/sast.yml and a local run
+# (CLAUDE.md, Static analysis), per agreed configuration, in the MicroPython build image pinned by
+# digest, the same image as the Makefile's IMAGE.
+# /.dockerenv inside it makes the Makefile run each target directly rather than wrapping it in a
+# nested `docker run`, so the job needs no docker access and works on any docker executor. The
+# image has no uv, which the Makefile uses to resolve the build version, so the job resolves it
+# with git-versioner itself and exports MICROPY_GIT_TAG/MICROPY_GIT_HASH; that needs full history
+# and tags.
+#
+# Every pipeline analyses every translation unit of each configuration, whoever owns it, with
+# cppcheck and CodeChecker's Clang Static Analyzer. Off merge requests it also runs GCC -fanalyzer
+# on the ARM configurations and, in the misra job, cppcheck's MISRA addon over every unit. A job
+# fails when a tool is missing, a compilation database is empty or incomplete, or cppcheck or
+# CodeChecker could not analyse a unit outside analysis/coverage-gaps.json.
+#
+# The analysis tools come from the micropython submodule: `make sast-tools` installs the
+# mpy_analysis package from it, so each job fetches the submodules first.
+#
+# CodeChecker is GitLab Advanced SAST's C/C++ engine (the gitlab-advanced-sast-cpp job, analyzer
+# image clangsa), at the releases that job runs, CodeChecker 6.25.1 and clang 20.1.8, with its
+# default checkers, on an instance without Advanced SAST and without running GitLab's own analyzer
+# image, plus the build's -DNDEBUG, which that job drops (Makefile). For the host configurations the
+# sast job here reports at least what that job would for the same database. For the ARM configurations it does not: GitLab's image has no arm-none-eabi-gcc, which
+# CodeChecker needs to set clang's target and include directories.
+#
+# Gap against GitHub: the results go no further than this job's artefacts. GitLab's Vulnerability
+# Report and its merge request approval policies read GitLab's own security report schema
+# (artifacts:reports:sast), not SARIF, and nothing here converts cppcheck's, CodeChecker's or GCC's
+# SARIF to it. So on GitLab a finding neither appears in the Vulnerability Report nor blocks a merge
+# request, and triage works from the SARIF artefacts. Closing that gap needs either a SARIF to
+# GitLab report converter, which would be SARIF rewriting of the programme's own, or GitLab
+# Advanced SAST reading the compilation database directly (below).
+
+stages:
+  - analyse
+
+variables:
+  GIT_DEPTH: 0
+  GIT_FETCH_EXTRA_FLAGS: --tags
+  GIT_SUBMODULE_STRATEGY: none
+  # The Makefile's own pins, restated so the tools cache key can name them. The image is pinned by
+  # digest and is part of the key, because cppcheck is built in and for it.
+  CPPCHECK_VERSION: 2.22.0
+  ARM_GCC_ANALYZER_VERSION: 15.2.rel1
+  CODECHECKER_VERSION: 6.25.1
+  LLVM_VERSION: 20.1.8
+  SAST_IMAGE: micropython/build-micropython-arm@sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
+  IMAGE_DIGEST: sha256:0d80e3aaa94bcc5d268d1ec92e3d19865e17d68d3bc9328f0051b5fb0dde007b
+
+sast:
+  stage: analyse
+  image: $SAST_IMAGE
+  timeout: 3h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      variables:
+        # -fanalyzer does not run on merge requests, so they do not fetch its toolchain.
+        SAST_SKIP_ARM_GCC: "1"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  # SAST_BUILD_DIR is the configuration's build directory, as the Makefile names it. The artefact
+  # paths name it, because on a runner that fetches rather than clones, another configuration's
+  # untracked sast/ directory from an earlier job can still be in the working tree.
+  parallel:
+    matrix:
+      - SAST_CONFIGURATION: stm32-USB2CAN_NUCLEO_H563ZI
+        SAST_BUILD_DIR: src/system/build-USB2CAN_NUCLEO_H563ZI
+        SAST_FANALYZER: "1"
+      - SAST_CONFIGURATION: stm32-USB2CAN_NUCLEO_H563ZI-mboot
+        SAST_BUILD_DIR: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot
+        SAST_FANALYZER: "1"
+      - SAST_CONFIGURATION: mimxrt-USB2CAN_SEEED_ARCH_MIX
+        SAST_BUILD_DIR: src/system/build-USB2CAN_SEEED_ARCH_MIX
+        SAST_FANALYZER: "1"
+      # No -fanalyzer for the host configurations: it needs a pinned GCC 15 host compiler, and
+      # the build image's host gcc is 12.2.
+      - SAST_CONFIGURATION: unix-standard
+        SAST_BUILD_DIR: src/micropython/ports/unix/build-standard
+        SAST_FANALYZER: ""
+      - SAST_CONFIGURATION: mpy-cross
+        SAST_BUILD_DIR: src/micropython/mpy-cross/build
+        SAST_FANALYZER: ""
+  # cppcheck is built from source, and the Arm toolchain and LLVM are large downloads, so all are
+  # cached, keyed on their versions and the image.
+  cache:
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip$SAST_SKIP_ARM_GCC
+    paths:
+      - build/sast-tools/
+  before_script:
+    - git config --global --add safe.directory '*'
+    - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
+    - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
+    - export MICROPY_GIT_TAG MICROPY_GIT_HASH
+  script:
+    - make submodules
+    - make sast-tools
+    - make build-$SAST_CONFIGURATION
+    - make compile-commands-$SAST_CONFIGURATION
+    - make cppcheck-$SAST_CONFIGURATION
+    - make check-cppcheck-$SAST_CONFIGURATION
+    - make codechecker-$SAST_CONFIGURATION
+    - make check-codechecker-$SAST_CONFIGURATION
+    - if [ "$CI_PIPELINE_SOURCE" != merge_request_event ] && [ -n "$SAST_FANALYZER" ]; then make fanalyzer-$SAST_CONFIGURATION; fi
+  artifacts:
+    when: always
+    expire_in: 4 weeks
+    paths:
+      - $SAST_BUILD_DIR/sast/compile_commands.json
+      - $SAST_BUILD_DIR/sast/cppcheck/*.sarif
+      - $SAST_BUILD_DIR/sast/codechecker/results.sarif
+      - $SAST_BUILD_DIR/sast/codechecker/reports/metadata.json
+      - $SAST_BUILD_DIR/sast/codechecker/reports/failed/
+      - $SAST_BUILD_DIR/sast/fanalyzer/
+
+# cppcheck's MISRA addon over every unit of each configuration, off merge requests, report-only, in a job
+# of its own because the addon makes it several times slower than the analysis above. Its results
+# stay in its artefact.
+misra:
+  stage: analyse
+  image: $SAST_IMAGE
+  timeout: 6h
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  variables:
+    SAST_SKIP_ARM_GCC: "1"
+    SAST_SKIP_CODECHECKER: "1"
+  parallel:
+    matrix:
+      - SAST_CONFIGURATION: stm32-USB2CAN_NUCLEO_H563ZI
+        SAST_BUILD_DIR: src/system/build-USB2CAN_NUCLEO_H563ZI
+      - SAST_CONFIGURATION: stm32-USB2CAN_NUCLEO_H563ZI-mboot
+        SAST_BUILD_DIR: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot
+      - SAST_CONFIGURATION: mimxrt-USB2CAN_SEEED_ARCH_MIX
+        SAST_BUILD_DIR: src/system/build-USB2CAN_SEEED_ARCH_MIX
+      - SAST_CONFIGURATION: unix-standard
+        SAST_BUILD_DIR: src/micropython/ports/unix/build-standard
+      - SAST_CONFIGURATION: mpy-cross
+        SAST_BUILD_DIR: src/micropython/mpy-cross/build
+  # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain and
+  # CodeChecker are only skipped, not removed.
+  cache:
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip
+    fallback_keys:
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip1
+    paths:
+      - build/sast-tools/
+    policy: pull
+  before_script:
+    - git config --global --add safe.directory '*'
+    - python3 -m pip install --quiet --disable-pip-version-check --target /tmp/git-versioner git-versioner
+    - read -r MICROPY_GIT_TAG MICROPY_GIT_HASH < <(PROJECT_ROOT="$PWD" PYTHONPATH=/tmp/git-versioner python3 -c 'import __version__; print(__version__.version, __version__.git_hash)')
+    - export MICROPY_GIT_TAG MICROPY_GIT_HASH
+  script:
+    - make submodules
+    - make sast-tools
+    - make build-$SAST_CONFIGURATION
+    - make compile-commands-$SAST_CONFIGURATION
+    - make misra-$SAST_CONFIGURATION
+  # The only place MISRA results are kept.
+  artifacts:
+    when: always
+    expire_in: 90 days
+    paths:
+      - $SAST_BUILD_DIR/sast/report/*.sarif
+
+# The licence and origin declarations of code copied into this repository (REUSE.toml), checked
+# with the REUSE tool, in a job of its own so a declaration problem does not fail the analysis.
+licences:
+  stage: analyse
+  image: $SAST_IMAGE
+  timeout: 30m
+  variables:
+    SAST_SKIP_ARM_GCC: "1"
+    SAST_SKIP_CODECHECKER: "1"
+  # The sast job's cache: full-run pipelines save the key with the Arm toolchain (-skip), merge
+  # request pipelines the one without it (-skip1). Either serves, since the Arm toolchain and
+  # CodeChecker are only skipped, not removed.
+  cache:
+    key: sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip
+    fallback_keys:
+      - sast-tools-$IMAGE_DIGEST-cppcheck-$CPPCHECK_VERSION-arm-gcc-$ARM_GCC_ANALYZER_VERSION-codechecker-$CODECHECKER_VERSION-llvm-$LLVM_VERSION-skip1
+    paths:
+      - build/sast-tools/
+    policy: pull
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == "sast"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  before_script:
+    - git config --global --add safe.directory '*'
+  script:
+    - make submodules
+    - make sast-tools
+    - make check-reuse
+
+# When GitLab Advanced SAST is enabled for C/C++ (GitLab 18.6 or later), it reads a configuration's
+# compilation database from this job's artefacts, for example the bootloader's:
+#   variables:
+#     GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
+#     SAST_COMPILATION_DATABASE: src/system/build-USB2CAN_NUCLEO_H563ZI/mboot/sast/compile_commands.json
+# That is a separate analyzer writing GitLab's own report schema, and is not wired here. The sast
+# job's CodeChecker targets are its local equivalent for the host configurations; for the ARM
+# ones GitLab's image lacks the arm-none-eabi-gcc CodeChecker needs.

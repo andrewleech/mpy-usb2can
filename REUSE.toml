@@ -1,0 +1,62 @@
+# Licence and origin of this repository's files, in the REUSE specification's format and checked
+# with the REUSE tool (make check-reuse).
+#
+# Everything tracked here is this repository's own to analyse and gate, including code copied in
+# from elsewhere. This file records who holds the copyright in that copied code, under which
+# licence and where it came from; the analysis does not read it. Code in a submodule is declared by
+# its own repository.
+#
+# The first annotation states LICENSE for every file. A file copied or derived from elsewhere gets
+# its own annotation after it, which overrides it, carrying the upstream copyright and licence and
+# the origin in SPDX-FileComment. A licence other than MIT also needs its text under LICENSES/,
+# which the REUSE tool checks.
+
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Andrew Leech"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "src/system/USB2CAN_NUCLEO_H563ZI/stm32h5xx_hal_conf.h"
+precedence = "override"
+SPDX-FileCopyrightText = "2023 Damien P. George"
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Copied unmodified from MicroPython, https://github.com/micropython/micropython, ports/stm32/boards/NUCLEO_H563ZI/stm32h5xx_hal_conf.h"
+
+[[annotations]]
+path = "src/system/USB2CAN_NUCLEO_H563ZI/pins.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "2013-2026 Damien P. George"
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Copied unmodified from MicroPython, https://github.com/micropython/micropython, ports/stm32/boards/NUCLEO_H563ZI/pins.csv"
+
+[[annotations]]
+path = "src/system/USB2CAN_SEEED_ARCH_MIX/pins.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "2013-2026 Damien P. George"
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Copied unmodified from MicroPython, https://github.com/micropython/micropython, ports/mimxrt/boards/SEEED_ARCH_MIX/pins.csv"
+
+[[annotations]]
+path = "tools/makeversionhdr.py"
+precedence = "override"
+SPDX-FileCopyrightText = ["2013-2026 Damien P. George", "2026 Andrew Leech"]
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Derived from MicroPython, https://github.com/micropython/micropython, py/makeversionhdr.py (an earlier revision, whose docstring it keeps), with local changes for git-versioner"
+
+[[annotations]]
+path = "src/integration-tests/tests/resources/mptools/pyboard.py"
+precedence = "override"
+SPDX-FileCopyrightText = ["2014-2019 Damien P. George", "2017 Paul Sokolovsky"]
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Copied from MicroPython, https://github.com/micropython/micropython, tools/pyboard.py, with local additions (mptools/README.md)"
+
+[[annotations]]
+path = "src/integration-tests/tests/resources/mptools/mpr.py"
+precedence = "override"
+SPDX-FileCopyrightText = "2019-2020 Damien P. George"
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Copied from the MicroPython project, https://github.com/micropython/micropython (mptools/README.md)"

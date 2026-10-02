@@ -1,0 +1,25 @@
+# cppcheck suppressions for this repository, in cppcheck's own --suppressions-list format, passed
+# to every cppcheck run the Makefile makes. One suppression per line:
+#
+#   errorId
+#   errorId:path
+#   errorId:path:line
+#
+# path is repository-relative and may use * and ?. cppcheck is run with -rp set to the repository
+# root, and under -rp an absolute path matches nothing.
+#
+# cppcheck's format has no field for a reason, so every entry carries its own in the # comment
+# lines immediately above it: which finding it is, why it is not a defect here, and the date it was
+# added. Say which of these it is:
+#
+#   false positive   the analyser is wrong about this code
+#   not applicable   the finding describes a real property that is not a defect on this target
+#
+# An entry without a reason is a finding hidden without evidence, and does not belong here.
+#
+# Code outside the first-party paths needs no entry. Findings in submodules and in the build
+# directory's generated code are uploaded but never gate, so suppressing them here would only hide
+# them from the people who triage them. A suppression is not a coverage gap either:
+# a unit the analyser could not read is recorded in coverage-gaps.json, which is the opposite claim.
+#
+# The list is empty. Nothing has been triaged as suppressible yet.
